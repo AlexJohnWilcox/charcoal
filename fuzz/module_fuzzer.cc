@@ -18,7 +18,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
   if (!verify(loaded.module).ok) return 0;
 
-  Heap heap(8u << 20);  // 8 MiB cap
+  Heap heap(256u << 10);  // 256 KiB cap — tight enough that allocation loops
+                          // exercise the collector within the instruction budget
   Limits limits;
   limits.max_insns = 500'000;
   limits.max_depth = 128;

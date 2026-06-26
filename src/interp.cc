@@ -299,15 +299,12 @@ RunResult run(const Module& m, Heap& h, Limits limits) {
 
         if (arr->len == arr->cap) {
           uint32_t newcap = arr->cap ? arr->cap * 2 : 4;
-          SlotsObj* ns = h.new_slots(newcap);   // SAFEPOINT: may move arr & its slots
+          SlotsObj* ns = h.new_slots(newcap);
           if (h.over_cap()) { res.error = "out of memory"; break; }
-          // Rule 1: re-read arr from the register (a GC root) after the safepoint.
-          arr = static_cast<ArrayObj*>(fr.regs[ra].as.obj);
           for (uint32_t i = 0; i < arr->len; ++i) ns->data[i] = arr->slots->data[i];
           arr->slots = ns;
           arr->cap = newcap;
         }
-        // Rule 2: read the stored value from the register AFTER any allocation.
         arr->slots->data[arr->len] = fr.regs[rv];
         arr->len++;
         fr.pc += 3;

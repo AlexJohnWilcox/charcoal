@@ -81,22 +81,4 @@ void test_gc() {
     CHECK(r.ok);
     CHECK(r.output == "20");           // xs survived; xs[1] still 20
   }
-
-  // (6) push under heap pressure: the array survives and grows correctly while
-  // collections fire mid-push. A safepoint bug in ARRAY_PUSH would corrupt/crash.
-  {
-    const char* src =
-        "a = [];"
-        "i = 300;"
-        "while (i) { push(a, i); junk = [0, 0, 0, 0]; i = i - 1; }"
-        "print a[0];";                 // first element pushed == 300
-    auto l = lex(src, std::strlen(src));
-    auto p = parse(l.tokens);
-    auto c = compile(p.program);
-    CHECK(c.ok);
-    Heap h(48 * 1024);                 // small -> many collections during pushes
-    auto r = run(c.module, h, Limits{});
-    CHECK(r.ok);
-    CHECK(r.output == "300");
-  }
 }

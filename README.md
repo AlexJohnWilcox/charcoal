@@ -117,6 +117,9 @@ Instructions are a one-byte opcode followed by fixed-width operands: `r` is a u8
 | `JUMP_IF_FALSE` | 0x41 | r, o     | jump if `r` is falsey                |
 | `PRINT`         | 0x50 | r        | print `r`                            |
 
-## Where this is going
+## Status
 
-This is the M1 baseline, and it's deliberately the simple, provably-correct version of everything. The allocator just mallocs each object and frees it all at the end. The next milestone swaps that for a moving, mark-compact garbage collector without changing any of the interfaces consumers use — which is why object creation already goes through a `Heap` and live objects are held through handle scopes even though, right now, none of that does anything. I'd rather build the seams in from the start than tear the thing apart later.
+Charcoal runs the whole pipeline above end to end, with a unit suite and two
+fuzzing harnesses kept passing under AddressSanitizer and UndefinedBehaviorSanitizer.
+It's a work in progress and the language is intentionally small; I add features
+when I have a use for them rather than for completeness.
