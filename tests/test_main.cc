@@ -13,6 +13,7 @@ void test_module_roundtrip();
 void test_loader();
 void test_verifier();
 void test_interp();
+void test_e2e();
 
 int main() {
   test_value();
@@ -25,6 +26,7 @@ int main() {
   test_loader();
   test_verifier();
   test_interp();
+  test_e2e();
 
   if (g_failures) {
     std::fprintf(stderr, "%d failure(s)\n", g_failures);
