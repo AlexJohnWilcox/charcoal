@@ -1,0 +1,6 @@
+xs = [1, 2, 3, 4, 5];
+i = 0;
+s = 0;
+while (i) { s = s + xs[0]; i = i - 1; }
+xs[2] = s + xs[4];
+print xs[2];

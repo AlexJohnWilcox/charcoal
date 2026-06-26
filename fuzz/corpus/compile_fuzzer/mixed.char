@@ -1,0 +1,4 @@
+fn build(k) { m = {"v" = k}; m.v = m.v * 2; return m; }
+arr = [build(1), build(2), build(3)];
+total = 0;
+print total;

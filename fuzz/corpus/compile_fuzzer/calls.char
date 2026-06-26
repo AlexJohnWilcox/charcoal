@@ -1,0 +1,4 @@
+fn add(a, b) { return a + b; }
+fn mul(a, b) { return a * b; }
+fn poly(x) { return add(mul(x, x), add(x, 1)); }
+print poly(5);

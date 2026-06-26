@@ -1,0 +1,43 @@
+# Fuzzing dictionary for the .cbc binary format and Charcoal source.
+# Magic / header tokens.
+magic="CBC\x01"
+ver="\x01\x00"
+
+# Constant tags.
+ctag_int="\x00"
+ctag_double="\x01"
+ctag_str="\x02"
+ctag_nil="\x03"
+ctag_bool="\x04"
+
+# Opcodes (guide mutations toward valid instruction streams).
+op_halt="\x00"
+op_load_const="\x01"
+op_load_nil="\x02"
+op_move="\x03"
+op_add="\x10"
+op_sub="\x11"
+op_mul="\x12"
+op_div="\x13"
+op_new_array="\x20"
+op_array_get="\x21"
+op_array_set="\x22"
+op_new_object="\x23"
+op_get_prop="\x24"
+op_set_prop="\x25"
+op_call="\x30"
+op_ret="\x31"
+op_jump="\x40"
+op_jump_if_false="\x41"
+op_print="\x50"
+
+# Source-level keywords (help compile_fuzzer reach real grammar).
+kw_fn="fn "
+kw_return="return "
+kw_if="if"
+kw_else="else"
+kw_while="while"
+kw_print="print "
+kw_true="true"
+kw_false="false"
+kw_nil="nil"

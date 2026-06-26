@@ -8,6 +8,12 @@ file(GLOB CORE_SRC CONFIGURE_DEPENDS src/*.cc)
 if(CORE_SRC)
   add_library(charcoal_core STATIC ${CORE_SRC})
   target_include_directories(charcoal_core PUBLIC include src)
+  # Under local fuzzing, the core library must also carry coverage
+  # instrumentation or the fuzzer runs blind to everything but the harness.
+  # (ClusterFuzzLite instead applies its own $CXXFLAGS to every TU.)
+  if(CHARCOAL_FUZZ)
+    target_compile_options(charcoal_core PRIVATE -fsanitize=fuzzer-no-link)
+  endif()
 endif()
 
 if(EXISTS ${CMAKE_SOURCE_DIR}/cli/main.cc AND TARGET charcoal_core)

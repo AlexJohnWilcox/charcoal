@@ -1,0 +1,4 @@
+n = 10;
+acc = 0;
+while (n) { if (n) { acc = acc + n; } n = n - 1; }
+if (acc) { print acc; } else { print 0; }
