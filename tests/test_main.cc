@@ -12,6 +12,7 @@ void test_compiler();
 void test_module_roundtrip();
 void test_loader();
 void test_verifier();
+void test_interp();
 
 int main() {
   test_value();
@@ -23,6 +24,7 @@ int main() {
   test_module_roundtrip();
   test_loader();
   test_verifier();
+  test_interp();
 
   if (g_failures) {
     std::fprintf(stderr, "%d failure(s)\n", g_failures);
