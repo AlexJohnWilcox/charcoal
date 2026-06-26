@@ -8,6 +8,7 @@ void test_object();
 void test_heap();
 void test_lexer();
 void test_parser();
+void test_compiler();
 
 int main() {
   test_value();
@@ -15,6 +16,7 @@ int main() {
   test_heap();
   test_lexer();
   test_parser();
+  test_compiler();
 
   if (g_failures) {
     std::fprintf(stderr, "%d failure(s)\n", g_failures);
