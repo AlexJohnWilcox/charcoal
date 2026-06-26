@@ -1,0 +1,8 @@
+build/
+build-*/
+*.o
+*.a
+*.cbc
+!fuzz/corpus/**/*.cbc
+crash-*
+.DS_Store
