@@ -98,6 +98,10 @@ VerifyResult verify_fn(const Module& m, const Function& f) {
 
   std::vector<Operand> ops;
 
+  // Params occupy registers [0, num_params); the register file must hold them.
+  // The interpreter relies on this when copying call arguments into a callee.
+  if (f.num_regs < f.num_params) return err("register file smaller than parameters");
+
   // Pass 1: decode, bounds-check, validate operands.
   size_t pc = 0;
   while (pc < len) {
