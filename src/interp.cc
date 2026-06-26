@@ -42,46 +42,72 @@ std::string render(const Value& v) {
       switch (v.as.obj->kind) {
         case ObjKind::String: {
           StringObj* s = static_cast<StringObj*>(v.as.obj);
-          return std::string(s->data, s->len);
+          return std::string(s->bytes->data, s->len);
         }
         case ObjKind::Array:    return "[array]";
         case ObjKind::Map:      return "[object]";
         case ObjKind::Function: return "[fn]";
+        case ObjKind::Bytes:
+        case ObjKind::Slots:    return "[internal]";  // never user-visible
       }
   }
   return "nil";
 }
 
-// Find a key in a map; returns its slot index or -1.
-int map_find(MapObj* m, const std::string& key) {
+// Find a key in a map; returns its slot index or -1. No allocation, so it never
+// moves anything — safe to hold `m` across it.
+int map_find(MapObj* m, const char* key, uint32_t klen) {
   for (uint32_t j = 0; j < m->len; ++j) {
-    if (m->keylens[j] == key.size() &&
-        std::memcmp(m->keys[j], key.data(), key.size()) == 0) {
+    StringObj* ks = static_cast<StringObj*>(m->keys->data[j].as.obj);
+    if (ks->len == klen && std::memcmp(ks->bytes->data, key, klen) == 0) {
       return static_cast<int>(j);
     }
   }
   return -1;
 }
 
-// Grow the three parallel arrays and append a malloc'd key copy + value. Stays
-// consistent with Heap's dtor, which frees keys[i] for i<len plus the arrays.
-void map_set(MapObj* m, const std::string& key, const Value& val) {
-  int j = map_find(m, key);
-  if (j >= 0) { m->vals[j] = val; return; }
+// Insert or overwrite key->val. Every new_* call here is a safepoint that can
+// move `m`, its key/val Slots, and `val`'s object, so all of them are rooted and
+// re-read after each allocation — never reuse a pointer from before a safepoint.
+void map_set(MapObj* m, const char* key, uint32_t klen, Value val, Heap& h) {
+  int j = map_find(m, key, klen);
+  if (j >= 0) { m->vals->data[j] = val; return; }  // overwrite: no allocation
+
+  HandleScope hs(h);
+  size_t mi = hs.root(m);
+  bool val_obj = (val.tag == Tag::Obj && val.as.obj);
+  size_t vi = val_obj ? hs.root(val.as.obj) : 0;
 
   if (m->len == m->cap) {
     uint32_t newcap = m->cap ? m->cap * 2 : 4;
-    m->keys    = static_cast<char**>(std::realloc(m->keys, sizeof(char*) * newcap));
-    m->keylens = static_cast<uint32_t*>(std::realloc(m->keylens, sizeof(uint32_t) * newcap));
-    m->vals    = static_cast<Value*>(std::realloc(m->vals, sizeof(Value) * newcap));
+    SlotsObj* nk = h.new_slots(newcap);          // safepoint
+    if (!nk) return;
+    size_t ki = hs.root(nk);
+    SlotsObj* nv = h.new_slots(newcap);          // safepoint; m, nk re-rooted
+    if (!nv) return;
+    size_t nvi = hs.root(nv);
+
+    m = hs.get<MapObj>(mi);                       // re-read after the safepoints
+    nk = hs.get<SlotsObj>(ki);
+    nv = hs.get<SlotsObj>(nvi);
+    for (uint32_t i = 0; i < m->len; ++i) {
+      nk->data[i] = m->keys->data[i];
+      nv->data[i] = m->vals->data[i];
+    }
+    m->keys = nk;
+    m->vals = nv;
     m->cap = newcap;
   }
-  char* kc = static_cast<char*>(std::malloc(key.size() ? key.size() : 1));
-  std::memcpy(kc, key.data(), key.size());
-  m->keys[m->len] = kc;
-  m->keylens[m->len] = static_cast<uint32_t>(key.size());
-  m->vals[m->len] = val;
-  ++m->len;
+
+  StringObj* ks = h.new_string(key, klen);        // safepoint
+  if (!ks) return;
+  m = hs.get<MapObj>(mi);                          // re-read m and val
+  if (val_obj) val.as.obj = hs.get<Object>(vi);
+
+  uint32_t i = m->len;
+  m->keys->data[i] = Value::object(ks);
+  m->vals->data[i] = val;
+  m->len = i + 1;
 }
 
 }  // namespace
@@ -100,6 +126,16 @@ RunResult run(const Module& m, Heap& h, Limits limits) {
   if (m.entry_func >= m.funcs.size()) { res.error = "entry function out of range"; return res; }
 
   std::vector<Frame> frames;
+
+  // The register files ARE the GC roots. Capturing `frames` by reference means
+  // every collection (which can only happen inside a new_* call below) sees the
+  // live stack and forwards every object register in place.
+  h.set_root_enumerator([&frames](GcVisitor& v) {
+    for (Frame& f : frames)
+      for (Value& r : f.regs)
+        v.visit(r);
+  });
+
   auto push_frame = [&](uint32_t idx, int result_reg) {
     Frame f;
     f.func_idx = idx;
@@ -232,7 +268,7 @@ RunResult run(const Module& m, Heap& h, Limits limits) {
         ArrayObj* arr = static_cast<ArrayObj*>(va.as.obj);
         int64_t idx = vi.as.i;
         if (idx < 0 || idx >= static_cast<int64_t>(arr->len)) { res.error = "index out of range"; break; }
-        fr.regs[dst] = arr->items[idx];
+        fr.regs[dst] = arr->slots->data[idx];
         fr.pc += 4;
         break;
       }
@@ -248,7 +284,7 @@ RunResult run(const Module& m, Heap& h, Limits limits) {
         ArrayObj* arr = static_cast<ArrayObj*>(va.as.obj);
         int64_t idx = vi.as.i;
         if (idx < 0 || idx >= static_cast<int64_t>(arr->len)) { res.error = "index out of range"; break; }
-        arr->items[idx] = fr.regs[vr];
+        arr->slots->data[idx] = fr.regs[vr];
         fr.pc += 4;
         break;
       }
@@ -270,8 +306,9 @@ RunResult run(const Module& m, Heap& h, Limits limits) {
           res.error = "type error: not an object"; break;
         }
         MapObj* mp = static_cast<MapObj*>(vo.as.obj);
-        int j = map_find(mp, m.consts[k].s);
-        fr.regs[dst] = (j >= 0) ? mp->vals[j] : Value::nil();
+        const std::string& key = m.consts[k].s;
+        int j = map_find(mp, key.data(), static_cast<uint32_t>(key.size()));
+        fr.regs[dst] = (j >= 0) ? mp->vals->data[j] : Value::nil();
         fr.pc += 5;
         break;
       }
@@ -285,7 +322,9 @@ RunResult run(const Module& m, Heap& h, Limits limits) {
           res.error = "type error: not an object"; break;
         }
         MapObj* mp = static_cast<MapObj*>(vo.as.obj);
-        map_set(mp, m.consts[k].s, fr.regs[vr]);
+        const std::string& key = m.consts[k].s;
+        map_set(mp, key.data(), static_cast<uint32_t>(key.size()), fr.regs[vr], h);
+        if (h.over_cap()) { res.error = "out of memory"; break; }
         fr.pc += 5;
         break;
       }

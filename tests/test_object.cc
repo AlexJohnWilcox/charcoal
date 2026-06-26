@@ -12,12 +12,12 @@ void test_object() {
   StringObj* s = h.new_string("hello", 5);
   CHECK(s->kind == ObjKind::String);
   CHECK(s->len == 5);
-  CHECK(s->data[0] == 'h' && s->data[4] == 'o');
+  CHECK(s->bytes->data[0] == 'h' && s->bytes->data[4] == 'o');
 
   ArrayObj* a = h.new_array(2);
   CHECK(a->kind == ObjKind::Array);
   CHECK(a->len == 2);
-  CHECK(a->items[0].tag == Tag::Nil && a->items[1].tag == Tag::Nil);
+  CHECK(a->slots->data[0].tag == Tag::Nil && a->slots->data[1].tag == Tag::Nil);
 
   MapObj* m = h.new_map();
   CHECK(m->kind == ObjKind::Map);

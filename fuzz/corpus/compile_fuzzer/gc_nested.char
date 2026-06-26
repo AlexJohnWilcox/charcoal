@@ -1,0 +1,5 @@
+fn make(n) { return [n, n, n]; }
+keep = make(1);
+i = 80;
+while (i) { junk = make(i); other = {"k" = junk}; i = i - 1; }
+print keep[0];

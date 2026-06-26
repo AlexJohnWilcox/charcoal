@@ -14,11 +14,13 @@ void test_loader();
 void test_verifier();
 void test_interp();
 void test_e2e();
+void test_gc();
 
 int main() {
   test_value();
   test_object();
   test_heap();
+  test_gc();
   test_lexer();
   test_parser();
   test_compiler();

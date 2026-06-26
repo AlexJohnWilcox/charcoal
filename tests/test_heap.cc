@@ -12,7 +12,7 @@ void test_heap() {
 
   ArrayObj* a = h.new_array(3);
   CHECK(a->len == 3);
-  CHECK(a->items[0].tag == Tag::Nil);
+  CHECK(a->slots->data[0].tag == Tag::Nil);
 
   CHECK(h.bytes_used() > 0);
   CHECK(h.over_cap() == false);

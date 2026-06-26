@@ -1,0 +1,9 @@
+acc = [0];
+i = 50;
+while (i) {
+  tmp = [i, i, i, i, i, i, i, i];
+  m = {"a" = i, "b" = i, "c" = i};
+  s = "some string content here";
+  i = i - 1;
+}
+print acc[0];

@@ -1,15 +1,18 @@
 #pragma once
 #include "object.h"
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <vector>
 
 namespace coal {
 
-// All object creation goes through Heap. M1 is a trivial allocator: each object
-// is malloc'd and tracked, everything freed in the dtor. M2 swaps this for a
-// moving mark-compact GC WITHOUT changing this interface, so consumers must
-// never `new`/`delete` an Object directly and must hold live objects through a
-// HandleScope across any allocation.
+class HandleScope;
+
+// All object creation goes through Heap. M2 is a Cheney semispace collector: a
+// collection can happen only inside a new_* call, and it MOVES every live
+// object. Consumers must never hold a raw Object* (or interior pointer) across a
+// call that can allocate — root it through a HandleScope and re-read it after.
 class Heap {
  public:
   explicit Heap(size_t max_bytes);
@@ -18,37 +21,80 @@ class Heap {
   Heap(const Heap&) = delete;
   Heap& operator=(const Heap&) = delete;
 
+  // Composite objects (allocate more than once internally; GC-safe).
   StringObj*   new_string(const char* p, uint32_t n);
   ArrayObj*    new_array(uint32_t len);
   MapObj*      new_map();
   FunctionObj* new_function(uint32_t func_index);
 
+  // Leaf storage blocks (single allocation each).
+  SlotsObj*    new_slots(uint32_t count);            // all slots initialized to nil
+  BytesObj*    new_bytes(const char* p, uint32_t n); // copies n bytes
+
   size_t bytes_used() const;
   bool   over_cap() const;   // callers must check and raise (not crash) when true
 
+  // The interpreter installs an enumerator that visits every root (the register
+  // files). Called at the start of each collection.
+  void set_root_enumerator(std::function<void(GcVisitor&)> roots) {
+    roots_ = std::move(roots);
+  }
+
+  // Evacuate `o` to to-space (or return its existing forwarding pointer). Public
+  // so GcVisitor can drive it; not for general consumer use.
+  Object* copy(Object* o);
+
  private:
-  std::vector<Object*> objects_;  // M1 registry; M2 replaces with a managed heap
-  size_t max_bytes_;
-  size_t used_ = 0;
+  friend class HandleScope;
+
+  void* bump(size_t n);
+  void  collect();
+  void  trace(Object* o);
+
+  uint8_t* space_a_ = nullptr;
+  uint8_t* space_b_ = nullptr;
+  uint8_t* from_ = nullptr;   // active semispace
+  uint8_t* to_ = nullptr;     // spare semispace (target during a collection)
+  size_t   semi_ = 0;         // size of ONE semispace, in bytes
+  size_t   top_ = 0;          // bump offset within from_
+  size_t   to_top_ = 0;       // bump offset within to_ during a collection
+  bool     over_cap_ = false;
+
+  std::function<void(GcVisitor&)> roots_;
+  std::vector<Object*> handles_;  // HandleScope root slots
 };
 
-// Pins objects as GC roots for the scope's lifetime. M1: tracking is a no-op
-// (the heap doesn't move), but the API must EXIST and be USED everywhere a raw
-// Object* is held across an allocation, so M2's moving GC is correct with zero
-// consumer changes.
+// Pins objects as GC roots for the scope's lifetime. Because the collector
+// moves objects, holding a raw Object* across an allocation is a use-after-move;
+// keep() roots the object and get() re-reads its (possibly relocated) address.
 class HandleScope {
  public:
-  explicit HandleScope(Heap& h) : heap_(h) {}
-  ~HandleScope() = default;
+  explicit HandleScope(Heap& h) : heap_(h), mark_(h.handles_.size()) {}
+  ~HandleScope() { heap_.handles_.resize(mark_); }
 
   HandleScope(const HandleScope&) = delete;
   HandleScope& operator=(const HandleScope&) = delete;
 
+  // Root `o`; returns its current address for convenience. To use the object
+  // across a later allocation, capture the index from root() and re-read it.
   template <class T>
-  T* keep(T* o) { return o; }  // M1 pass-through; M2 records a root
+  T* keep(T* o) { heap_.handles_.push_back(o); return o; }
+
+  // Root `o` and return the slot index within this scope (0 = first rooted).
+  size_t root(Object* o) {
+    size_t idx = heap_.handles_.size() - mark_;
+    heap_.handles_.push_back(o);
+    return idx;
+  }
+
+  // Re-read a rooted object after a safepoint. Reads the live slot each time, so
+  // it survives vector reallocation.
+  template <class T>
+  T* get(size_t i) const { return static_cast<T*>(heap_.handles_[mark_ + i]); }
 
  private:
-  Heap& heap_;
+  Heap&  heap_;
+  size_t mark_;
 };
 
 }  // namespace coal
