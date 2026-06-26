@@ -59,4 +59,20 @@ void test_verifier() {
     m.funcs[0].num_regs = 4;
     CHECK(!verify(m).ok);
   }
+
+  // A1: a binary operator (LT) with an out-of-range register operand is rejected.
+  {
+    Module m = compile_src("print 1;", 8);
+    m.funcs[0].code = {OP_LT, 0, 1, 200, OP_HALT};  // r3=200 >= num_regs
+    m.funcs[0].num_regs = 4;
+    CHECK(!verify(m).ok);
+  }
+
+  // A1: a unary operator (NEG) with an out-of-range register operand is rejected.
+  {
+    Module m = compile_src("print 1;", 8);
+    m.funcs[0].code = {OP_NEG, 200, 0, OP_HALT};
+    m.funcs[0].num_regs = 4;
+    CHECK(!verify(m).ok);
+  }
 }

@@ -39,6 +39,9 @@ bool operands_of(uint8_t op, std::vector<Operand>& ops) {
       break;
     case OP_MOVE:
     case OP_ARRAY_PUSH:
+    case OP_NEG:
+    case OP_NOT:
+    case OP_BNOT:
       ops = {Operand::Reg, Operand::Reg};
       break;
     case OP_NEW_ARRAY:
@@ -51,6 +54,18 @@ bool operands_of(uint8_t op, std::vector<Operand>& ops) {
     case OP_SUB:
     case OP_MUL:
     case OP_DIV:
+    case OP_MOD:
+    case OP_EQ:
+    case OP_NE:
+    case OP_LT:
+    case OP_LE:
+    case OP_GT:
+    case OP_GE:
+    case OP_BAND:
+    case OP_BOR:
+    case OP_BXOR:
+    case OP_SHL:
+    case OP_SHR:
     case OP_ARRAY_GET:
     case OP_ARRAY_SET:
       ops = {Operand::Reg, Operand::Reg, Operand::Reg};

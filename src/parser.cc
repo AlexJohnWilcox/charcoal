@@ -9,23 +9,54 @@ namespace {
 
 constexpr int kMaxDepth = 200;
 
+// Binary/logical precedence (higher binds tighter). 0 = not a binary operator.
 int bin_prec(Tok k) {
   switch (k) {
+    case Tok::PipePipe: return 1;
+    case Tok::AmpAmp:   return 2;
+    case Tok::EqEq:
+    case Tok::BangEq:   return 3;
+    case Tok::Lt:
+    case Tok::Le:
+    case Tok::Gt:
+    case Tok::Ge:       return 4;
+    case Tok::Pipe:     return 5;
+    case Tok::Caret:    return 6;
+    case Tok::Amp:      return 7;
+    case Tok::Shl:
+    case Tok::Shr:      return 8;
     case Tok::Plus:
-    case Tok::Minus: return 1;
+    case Tok::Minus:    return 9;
     case Tok::Star:
-    case Tok::Slash: return 2;
-    default:         return 0;
+    case Tok::Slash:
+    case Tok::Percent:  return 10;
+    default:            return 0;
   }
 }
 
+// Maps a token to its documented char op code. 'a'/'o' denote the short-circuit
+// logical operators (Logical nodes); everything else is a Binary node.
 char bin_op(Tok k) {
   switch (k) {
-    case Tok::Plus:  return '+';
-    case Tok::Minus: return '-';
-    case Tok::Star:  return '*';
-    case Tok::Slash: return '/';
-    default:         return 0;
+    case Tok::Plus:     return '+';
+    case Tok::Minus:    return '-';
+    case Tok::Star:     return '*';
+    case Tok::Slash:    return '/';
+    case Tok::Percent:  return '%';
+    case Tok::EqEq:     return 'E';
+    case Tok::BangEq:   return 'N';
+    case Tok::Lt:       return '<';
+    case Tok::Le:       return 'l';
+    case Tok::Gt:       return '>';
+    case Tok::Ge:       return 'g';
+    case Tok::Amp:      return '&';
+    case Tok::Pipe:     return '|';
+    case Tok::Caret:    return '^';
+    case Tok::Shl:      return 'L';
+    case Tok::Shr:      return 'R';
+    case Tok::AmpAmp:   return 'a';
+    case Tok::PipePipe: return 'o';
+    default:            return 0;
   }
 }
 
@@ -204,13 +235,39 @@ struct Parser {
     return base;
   }
 
+  // Prefix unary: -x, !x, ~x. Binds tighter than any binary operator and is
+  // chainable (!!x, - -x). The operand is itself a unary() so postfix (index /
+  // call / field) still binds tighter than the prefix.
+  Node* unary() {
+    DepthGuard g(*this);
+    if (!g.ok) { fail("nesting too deep"); return nullptr; }
+
+    char op = 0;
+    switch (peek().kind) {
+      case Tok::Minus: op = '-'; break;
+      case Tok::Bang:  op = '!'; break;
+      case Tok::Tilde: op = '~'; break;
+      default: break;
+    }
+    if (op) {
+      advance();
+      Node* operand = unary();
+      if (!operand || failed()) return nullptr;
+      Node* n = make(NodeKind::Unary);
+      n->op = op;
+      n->kids = {operand};
+      return n;
+    }
+    return postfix(primary());
+  }
+
   // Pratt / precedence climbing. minPrec is the lowest binding power this call
   // will consume.
   Node* expr(int minPrec) {
     DepthGuard g(*this);
     if (!g.ok) { fail("nesting too deep"); return nullptr; }
 
-    Node* left = postfix(primary());
+    Node* left = unary();
     if (!left || failed()) return nullptr;
 
     while (true) {
@@ -218,9 +275,9 @@ struct Parser {
       if (prec == 0 || prec < minPrec) break;
       char op = bin_op(peek().kind);
       advance();
-      Node* right = expr(prec + 1);
+      Node* right = expr(prec + 1);  // left-associative
       if (!right || failed()) return nullptr;
-      Node* n = make(NodeKind::Binary);
+      Node* n = make((op == 'a' || op == 'o') ? NodeKind::Logical : NodeKind::Binary);
       n->op = op;
       n->kids = {left, right};
       left = n;

@@ -57,4 +57,50 @@ void test_parser() {
     auto r = parse(l.tokens);
     CHECK(!r.error.empty());
   }
+
+  // --- A1: operator precedence and node kinds ---
+
+  // && binds tighter than ||: a && b || c parses as (a && b) || c.
+  {
+    auto l = lex("print a && b || c;", 18);
+    auto r = parse(l.tokens);
+    CHECK(r.error.empty());
+    Node* top = r.program->kids[0]->kids[0];     // Print -> Logical(||)
+    CHECK(top->kind == NodeKind::Logical);
+    CHECK(top->op == 'o');
+    CHECK(top->kids[0]->kind == NodeKind::Logical);  // lhs is (a && b)
+    CHECK(top->kids[0]->op == 'a');
+  }
+
+  // Comparison binds tighter than equality: 1 < 2 == true -> (1 < 2) == true.
+  {
+    auto l = lex("print 1 < 2 == true;", 20);
+    auto r = parse(l.tokens);
+    CHECK(r.error.empty());
+    Node* eq = r.program->kids[0]->kids[0];      // Binary(==)
+    CHECK(eq->kind == NodeKind::Binary);
+    CHECK(eq->op == 'E');
+    CHECK(eq->kids[0]->kind == NodeKind::Binary); // lhs is (1 < 2)
+    CHECK(eq->kids[0]->op == '<');
+  }
+
+  // Unary binds tighter than binary: -a * b parses as (-a) * b, and unary chains.
+  {
+    auto l = lex("print -a * b;", 13);
+    auto r = parse(l.tokens);
+    CHECK(r.error.empty());
+    Node* mul = r.program->kids[0]->kids[0];     // Binary(*)
+    CHECK(mul->kind == NodeKind::Binary);
+    CHECK(mul->op == '*');
+    CHECK(mul->kids[0]->kind == NodeKind::Unary); // lhs is (-a)
+    CHECK(mul->kids[0]->op == '-');
+  }
+  {
+    auto l = lex("print !!x;", 10);
+    auto r = parse(l.tokens);
+    CHECK(r.error.empty());
+    Node* u = r.program->kids[0]->kids[0];
+    CHECK(u->kind == NodeKind::Unary && u->op == '!');
+    CHECK(u->kids[0]->kind == NodeKind::Unary && u->kids[0]->op == '!');
+  }
 }

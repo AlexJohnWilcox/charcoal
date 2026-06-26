@@ -9,6 +9,9 @@ enum class Tok : uint8_t {
   Plus, Minus, Star, Slash,
   LParen, RParen, LBrace, RBrace, LBracket, RBracket,
   Comma, Dot, Assign, Semicolon,
+  // operators (A1)
+  EqEq, BangEq, Lt, Le, Gt, Ge, AmpAmp, PipePipe, Bang,
+  Percent, Amp, Pipe, Caret, Tilde, Shl, Shr,
   KwFn, KwReturn, KwIf, KwElse, KwWhile, KwNil, KwTrue, KwFalse, KwPrint,
   Error
 };

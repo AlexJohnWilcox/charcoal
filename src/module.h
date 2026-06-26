@@ -40,6 +40,18 @@ enum Op : uint8_t {
   OP_SUB        = 0x11,  // r, r2, r3
   OP_MUL        = 0x12,  // r, r2, r3
   OP_DIV        = 0x13,  // r, r2, r3
+  OP_MOD        = 0x14,  // r, r2, r3
+  OP_EQ         = 0x15,  // r, r2, r3
+  OP_NE         = 0x16,  // r, r2, r3
+  OP_LT         = 0x17,  // r, r2, r3
+  OP_LE         = 0x18,  // r, r2, r3
+  OP_GT         = 0x19,  // r, r2, r3
+  OP_GE         = 0x1A,  // r, r2, r3
+  OP_BAND       = 0x1B,  // r, r2, r3
+  OP_BOR        = 0x1C,  // r, r2, r3
+  OP_BXOR       = 0x1D,  // r, r2, r3
+  OP_SHL        = 0x1E,  // r, r2, r3
+  OP_SHR        = 0x1F,  // r, r2, r3
   OP_NEW_ARRAY  = 0x20,  // r, n
   OP_ARRAY_GET  = 0x21,  // r, r2, r3
   OP_ARRAY_SET  = 0x22,  // r, r2, r3   (r[r2] = r3)
@@ -52,6 +64,9 @@ enum Op : uint8_t {
   OP_JUMP       = 0x40,  // o
   OP_JUMP_IF_FALSE = 0x41,  // r, o
   OP_PRINT      = 0x50,  // r
+  OP_NEG        = 0x60,  // r, r2   (-x)
+  OP_NOT        = 0x61,  // r, r2   (!x)
+  OP_BNOT       = 0x62,  // r, r2   (~x)
 };
 
 // Serialize to the .cbc v1 binary format (implemented in Task 5).

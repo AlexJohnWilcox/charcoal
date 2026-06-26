@@ -9,7 +9,7 @@ namespace coal {
 enum class NodeKind {
   // expressions
   IntLit, FloatLit, StrLit, BoolLit, NilLit, Ident,
-  Binary, Assign, Index, Field, Call, ArrayLit, MapLit,
+  Binary, Unary, Logical, Assign, Index, Field, Call, ArrayLit, MapLit,
   // statements
   ExprStmt, Print, Return, If, While, Block, FnDecl, Program
 };
@@ -29,7 +29,9 @@ struct Node {
 };
 
 // Per-kind kids shape (the contract the compiler in Task 4 relies on):
-//   Binary   : [lhs, rhs]              op in {+,-,*,/}
+//   Binary   : [lhs, rhs]   op in {+ - * / % E N < l > g & | ^ L R}
+//   Unary    : [operand]    op in {- ! ~}
+//   Logical  : [lhs, rhs]   op in {a (&&), o (||)}  short-circuit, yields Bool
 //   Assign   : [target, value]         target is Ident | Index | Field
 //   Index    : [container, index]
 //   Field    : [container]             field name in str

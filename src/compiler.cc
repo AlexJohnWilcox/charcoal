@@ -125,14 +125,81 @@ struct Compiler {
         compile_expr(n->kids[1], t2);
         Op op;
         switch (n->op) {
-          case '+': op = OP_ADD; break;
-          case '-': op = OP_SUB; break;
-          case '*': op = OP_MUL; break;
-          case '/': op = OP_DIV; break;
+          case '+': op = OP_ADD;  break;
+          case '-': op = OP_SUB;  break;
+          case '*': op = OP_MUL;  break;
+          case '/': op = OP_DIV;  break;
+          case '%': op = OP_MOD;  break;
+          case 'E': op = OP_EQ;   break;
+          case 'N': op = OP_NE;   break;
+          case '<': op = OP_LT;   break;
+          case 'l': op = OP_LE;   break;
+          case '>': op = OP_GT;   break;
+          case 'g': op = OP_GE;   break;
+          case '&': op = OP_BAND; break;
+          case '|': op = OP_BOR;  break;
+          case '^': op = OP_BXOR; break;
+          case 'L': op = OP_SHL;  break;
+          case 'R': op = OP_SHR;  break;
           default:  fail("bad operator"); return;
         }
         emit(op); emit_r(dst); emit_r(t1); emit_r(t2);
         reg_top = save;
+        break;
+      }
+      case NodeKind::Unary: {
+        int save = reg_top;
+        int t = reg_top;
+        reg_top += 1; use(reg_top);
+        compile_expr(n->kids[0], t);
+        Op op;
+        switch (n->op) {
+          case '-': op = OP_NEG;  break;
+          case '!': op = OP_NOT;  break;
+          case '~': op = OP_BNOT; break;
+          default:  fail("bad unary operator"); return;
+        }
+        emit(op); emit_r(dst); emit_r(t);
+        reg_top = save;
+        break;
+      }
+      case NodeKind::Logical: {
+        // Short-circuit, yields a Bool in dst. Only JUMP_IF_FALSE is available,
+        // so the two operators are built from that primitive.
+        if (n->op == 'a') {
+          // a && b : false if either operand is falsey, else true.
+          compile_expr(n->kids[0], dst);
+          emit(OP_JUMP_IF_FALSE); emit_r(dst);
+          int jf1 = emit_offset();
+          compile_expr(n->kids[1], dst);
+          emit(OP_JUMP_IF_FALSE); emit_r(dst);
+          int jf2 = emit_offset();
+          emit(OP_LOAD_CONST); emit_r(dst); emit_k(k_bool(true));
+          emit(OP_JUMP);
+          int jend = emit_offset();
+          patch_jump(jf1);   // a falsey
+          patch_jump(jf2);   // b falsey
+          emit(OP_LOAD_CONST); emit_r(dst); emit_k(k_bool(false));
+          patch_jump(jend);
+        } else {
+          // a || b : true if either operand is truthy, else false.
+          compile_expr(n->kids[0], dst);
+          emit(OP_JUMP_IF_FALSE); emit_r(dst);
+          int jcheckb = emit_offset();   // a falsey -> evaluate b
+          emit(OP_JUMP);
+          int jtrue_a = emit_offset();   // a truthy -> true
+          patch_jump(jcheckb);
+          compile_expr(n->kids[1], dst);
+          emit(OP_JUMP_IF_FALSE); emit_r(dst);
+          int jfalse = emit_offset();    // b falsey -> false
+          patch_jump(jtrue_a);           // a-truthy and b-truthy meet here
+          emit(OP_LOAD_CONST); emit_r(dst); emit_k(k_bool(true));
+          emit(OP_JUMP);
+          int jend = emit_offset();
+          patch_jump(jfalse);
+          emit(OP_LOAD_CONST); emit_r(dst); emit_k(k_bool(false));
+          patch_jump(jend);
+        }
         break;
       }
       case NodeKind::Index: {

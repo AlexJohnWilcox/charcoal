@@ -109,13 +109,19 @@ LexResult lex(const char* src, size_t n) {
       continue;
     }
 
-    // Single-character tokens.
+    // Operators and punctuation (longest-match for the multi-char operators;
+    // every lookahead stays bounds-checked via i + 1 < n).
     Tok k;
+    uint32_t oplen = 1;
+    auto next_is = [&](char want) { return i + 1 < n && src[i + 1] == want; };
     switch (c) {
       case '+': k = Tok::Plus;      break;
       case '-': k = Tok::Minus;     break;
       case '*': k = Tok::Star;      break;
       case '/': k = Tok::Slash;     break;
+      case '%': k = Tok::Percent;   break;
+      case '^': k = Tok::Caret;     break;
+      case '~': k = Tok::Tilde;     break;
       case '(': k = Tok::LParen;    break;
       case ')': k = Tok::RParen;    break;
       case '{': k = Tok::LBrace;    break;
@@ -124,15 +130,28 @@ LexResult lex(const char* src, size_t n) {
       case ']': k = Tok::RBracket;  break;
       case ',': k = Tok::Comma;     break;
       case '.': k = Tok::Dot;       break;
-      case '=': k = Tok::Assign;    break;
       case ';': k = Tok::Semicolon; break;
+      case '=': if (next_is('=')) { k = Tok::EqEq;   oplen = 2; } else k = Tok::Assign; break;
+      case '!': if (next_is('=')) { k = Tok::BangEq; oplen = 2; } else k = Tok::Bang;   break;
+      case '&': if (next_is('&')) { k = Tok::AmpAmp; oplen = 2; } else k = Tok::Amp;    break;
+      case '|': if (next_is('|')) { k = Tok::PipePipe; oplen = 2; } else k = Tok::Pipe; break;
+      case '<':
+        if (next_is('=')) { k = Tok::Le;  oplen = 2; }
+        else if (next_is('<')) { k = Tok::Shl; oplen = 2; }
+        else k = Tok::Lt;
+        break;
+      case '>':
+        if (next_is('=')) { k = Tok::Ge;  oplen = 2; }
+        else if (next_is('>')) { k = Tok::Shr; oplen = 2; }
+        else k = Tok::Gt;
+        break;
       default:
         r.error = "unexpected character";
         r.err_line = line;
         return r;
     }
-    push(k, src + i, 1);
-    ++i;
+    push(k, src + i, oplen);
+    i += oplen;
   }
 
   push(Tok::Eof, src + n, 0);

@@ -2,6 +2,7 @@
 
 #include "object.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -29,6 +30,32 @@ int64_t wmul(int64_t a, int64_t b) { return static_cast<int64_t>(static_cast<uin
 
 double as_double(const Value& v) {
   return v.tag == Tag::Double ? v.as.d : static_cast<double>(v.as.i);
+}
+
+// Total equality: numbers compare numerically (int/double cross-compare),
+// strings by content, other objects by identity, different categories unequal.
+bool values_equal(const Value& a, const Value& b) {
+  if (a.is_number() && b.is_number()) {
+    if (a.tag == Tag::Int && b.tag == Tag::Int) return a.as.i == b.as.i;
+    return as_double(a) == as_double(b);
+  }
+  if (a.tag != b.tag) return false;
+  switch (a.tag) {
+    case Tag::Nil:  return true;
+    case Tag::Bool: return a.as.b == b.as.b;
+    case Tag::Obj: {
+      if (a.as.obj == b.as.obj) return true;
+      if (a.as.obj && b.as.obj && a.as.obj->kind == ObjKind::String &&
+          b.as.obj->kind == ObjKind::String) {
+        StringObj* sa = static_cast<StringObj*>(a.as.obj);
+        StringObj* sb = static_cast<StringObj*>(b.as.obj);
+        return sa->len == sb->len &&
+               std::memcmp(sa->bytes->data, sb->bytes->data, sa->len) == 0;
+      }
+      return false;
+    }
+    default: return false;  // Int/Double already handled
+  }
 }
 
 std::string render(const Value& v) {
@@ -245,6 +272,126 @@ RunResult run(const Module& m, Heap& h, Limits limits) {
           fr.regs[dst] = Value::number(r);
         }
         fr.pc += 4;
+        break;
+      }
+
+      case OP_MOD: {
+        int dst = u8at(1), a = u8at(2), b = u8at(3);
+        const Value& va = fr.regs[a];
+        const Value& vb = fr.regs[b];
+        if (!va.is_number() || !vb.is_number()) {
+          res.error = "type error: modulo on non-number"; break;
+        }
+        if (va.tag == Tag::Int && vb.tag == Tag::Int) {
+          int64_t x = va.as.i, y = vb.as.i;
+          if (y == 0) { res.error = "modulo by zero"; break; }
+          if (x == std::numeric_limits<int64_t>::min() && y == -1) {
+            res.error = "integer overflow in modulo"; break;
+          }
+          fr.regs[dst] = Value::integer(x % y);
+        } else {
+          fr.regs[dst] = Value::number(std::fmod(as_double(va), as_double(vb)));
+        }
+        fr.pc += 4;
+        break;
+      }
+
+      case OP_EQ:
+      case OP_NE: {
+        int dst = u8at(1), a = u8at(2), b = u8at(3);
+        bool eq = values_equal(fr.regs[a], fr.regs[b]);
+        fr.regs[dst] = Value::boolean(op == OP_EQ ? eq : !eq);
+        fr.pc += 4;
+        break;
+      }
+
+      case OP_LT:
+      case OP_LE:
+      case OP_GT:
+      case OP_GE: {
+        int dst = u8at(1), a = u8at(2), b = u8at(3);
+        const Value& va = fr.regs[a];
+        const Value& vb = fr.regs[b];
+        if (!va.is_number() || !vb.is_number()) {
+          res.error = "type error: comparison on non-number"; break;
+        }
+        bool r;
+        if (va.tag == Tag::Int && vb.tag == Tag::Int) {
+          int64_t x = va.as.i, y = vb.as.i;
+          r = op == OP_LT ? x < y : op == OP_LE ? x <= y : op == OP_GT ? x > y : x >= y;
+        } else {
+          double x = as_double(va), y = as_double(vb);
+          r = op == OP_LT ? x < y : op == OP_LE ? x <= y : op == OP_GT ? x > y : x >= y;
+        }
+        fr.regs[dst] = Value::boolean(r);
+        fr.pc += 4;
+        break;
+      }
+
+      case OP_BAND:
+      case OP_BOR:
+      case OP_BXOR: {
+        int dst = u8at(1), a = u8at(2), b = u8at(3);
+        const Value& va = fr.regs[a];
+        const Value& vb = fr.regs[b];
+        if (va.tag != Tag::Int || vb.tag != Tag::Int) {
+          res.error = "type error: bitwise op on non-integer"; break;
+        }
+        int64_t x = va.as.i, y = vb.as.i, r;
+        switch (op) {
+          case OP_BAND: r = x & y; break;
+          case OP_BOR:  r = x | y; break;
+          default:      r = x ^ y; break;  // OP_BXOR
+        }
+        fr.regs[dst] = Value::integer(r);
+        fr.pc += 4;
+        break;
+      }
+
+      case OP_SHL:
+      case OP_SHR: {
+        int dst = u8at(1), a = u8at(2), b = u8at(3);
+        const Value& va = fr.regs[a];
+        const Value& vb = fr.regs[b];
+        if (va.tag != Tag::Int || vb.tag != Tag::Int) {
+          res.error = "type error: shift on non-integer"; break;
+        }
+        int64_t s = vb.as.i;
+        if (s < 0 || s >= 64) { res.error = "shift amount out of range"; break; }
+        uint64_t x = static_cast<uint64_t>(va.as.i);
+        uint64_t r = op == OP_SHL ? (x << s) : (x >> s);  // logical, well-defined
+        fr.regs[dst] = Value::integer(static_cast<int64_t>(r));
+        fr.pc += 4;
+        break;
+      }
+
+      case OP_NEG: {
+        int dst = u8at(1), a = u8at(2);
+        const Value& va = fr.regs[a];
+        if (!va.is_number()) { res.error = "type error: negate non-number"; break; }
+        if (va.tag == Tag::Int) {
+          fr.regs[dst] = Value::integer(
+              static_cast<int64_t>(0u - static_cast<uint64_t>(va.as.i)));  // wrapping
+        } else {
+          fr.regs[dst] = Value::number(-va.as.d);
+        }
+        fr.pc += 3;
+        break;
+      }
+
+      case OP_NOT: {
+        int dst = u8at(1), a = u8at(2);
+        fr.regs[dst] = Value::boolean(!fr.regs[a].truthy());
+        fr.pc += 3;
+        break;
+      }
+
+      case OP_BNOT: {
+        int dst = u8at(1), a = u8at(2);
+        const Value& va = fr.regs[a];
+        if (va.tag != Tag::Int) { res.error = "type error: bitwise-not non-integer"; break; }
+        fr.regs[dst] = Value::integer(~va.as.i);
+        fr.pc += 3;
         break;
       }
 

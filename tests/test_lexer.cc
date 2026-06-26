@@ -36,4 +36,33 @@ void test_lexer() {
   std::string big(40, '9');
   auto of = lex(big.c_str(), big.size());
   CHECK(!of.error.empty());
+
+  // --- A1 operators: each lexes to the right token ---
+  {
+    auto o = lex("== != <= >= && || ! % & | ^ ~ << >>", 35);
+    CHECK(o.error.empty());
+    const Tok want[] = {Tok::EqEq, Tok::BangEq, Tok::Le, Tok::Ge, Tok::AmpAmp,
+                        Tok::PipePipe, Tok::Bang, Tok::Percent, Tok::Amp, Tok::Pipe,
+                        Tok::Caret, Tok::Tilde, Tok::Shl, Tok::Shr, Tok::Eof};
+    CHECK(o.tokens.size() == sizeof(want) / sizeof(want[0]));
+    for (size_t i = 0; i < o.tokens.size(); ++i) CHECK(o.tokens[i].kind == want[i]);
+  }
+
+  // Longest-match disambiguation: multi-char vs single-char neighbours.
+  {
+    auto d = lex("< << <= = == & &&", 17);
+    CHECK(d.error.empty());
+    const Tok want[] = {Tok::Lt, Tok::Shl, Tok::Le, Tok::Assign, Tok::EqEq,
+                        Tok::Amp, Tok::AmpAmp, Tok::Eof};
+    CHECK(d.tokens.size() == sizeof(want) / sizeof(want[0]));
+    for (size_t i = 0; i < d.tokens.size(); ++i) CHECK(d.tokens[i].kind == want[i]);
+  }
+
+  // A trailing two-char-capable operator at EOF must not overread: "<" alone.
+  {
+    auto t = lex("<", 1);
+    CHECK(t.error.empty());
+    CHECK(t.tokens[0].kind == Tok::Lt);
+    CHECK(t.tokens.back().kind == Tok::Eof);
+  }
 }

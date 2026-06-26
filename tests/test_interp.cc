@@ -71,4 +71,30 @@ void test_interp() {
 
   // push on a non-array is a runtime error, not a crash.
   { auto r = SRC("x = 5; push(x, 1);"); CHECK(!r.ok); }
+
+  // --- A1 operators ---
+  { auto r = SRC("print 3 < 5;");            CHECK(r.ok); CHECK(r.output == "true"); }
+  { auto r = SRC("print 5 <= 5;");           CHECK(r.ok); CHECK(r.output == "true"); }
+  { auto r = SRC("print 6 > 9;");            CHECK(r.ok); CHECK(r.output == "false"); }
+  { auto r = SRC("print 2 == 2;");           CHECK(r.ok); CHECK(r.output == "true"); }
+  { auto r = SRC("print 2 != 3;");           CHECK(r.ok); CHECK(r.output == "true"); }
+  { auto r = SRC("print 1 < 2 && 3 > 2;");   CHECK(r.ok); CHECK(r.output == "true"); }
+  { auto r = SRC("print 0 || 0;");           CHECK(r.ok); CHECK(r.output == "false"); }
+  { auto r = SRC("print 1 || 0;");           CHECK(r.ok); CHECK(r.output == "true"); }
+  { auto r = SRC("print 7 % 3;");            CHECK(r.ok); CHECK(r.output == "1"); }
+  { auto r = SRC("print 0 - 5 + 2;");        CHECK(r.ok); CHECK(r.output == "-3"); }
+  { auto r = SRC("print -5 + 2;");           CHECK(r.ok); CHECK(r.output == "-3"); }
+  { auto r = SRC("print !0;");               CHECK(r.ok); CHECK(r.output == "true"); }
+  { auto r = SRC("print !3;");               CHECK(r.ok); CHECK(r.output == "false"); }
+  { auto r = SRC("print 6 & 3;");            CHECK(r.ok); CHECK(r.output == "2"); }
+  { auto r = SRC("print 5 | 2;");            CHECK(r.ok); CHECK(r.output == "7"); }
+  { auto r = SRC("print 6 ^ 3;");            CHECK(r.ok); CHECK(r.output == "5"); }
+  { auto r = SRC("print 1 << 4;");           CHECK(r.ok); CHECK(r.output == "16"); }
+  { auto r = SRC("print 32 >> 2;");          CHECK(r.ok); CHECK(r.output == "8"); }
+  { auto r = SRC("print 1 + 2 * 3 == 7;");   CHECK(r.ok); CHECK(r.output == "true"); }  // precedence
+  { auto r = SRC("a = \"ab\"; print a == \"ab\";"); CHECK(r.ok); CHECK(r.output == "true"); }
+  // UB guards must produce runtime errors, not sanitizer aborts:
+  { auto r = SRC("print 10 % 0;");           CHECK(!r.ok); }
+  { auto r = SRC("print 1 << 99;");          CHECK(!r.ok); }
+  { auto r = SRC("print 5 < \"x\";");        CHECK(!r.ok); }  // comparison on non-number
 }
