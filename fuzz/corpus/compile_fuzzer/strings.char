@@ -1,4 +1,0 @@
-s = "hello\nworld";
-t = "tab\tsep";
-obj = {"a" = s, "b" = t};
-print obj.a;

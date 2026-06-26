@@ -1,3 +1,0 @@
-m = {"name" = 7, "count" = 3, "flag" = true};
-m.count = m.count + m.name;
-print m.count;

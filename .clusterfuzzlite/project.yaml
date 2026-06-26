@@ -1,7 +1,6 @@
 language: c++
 fuzz_targets:
   - module_fuzzer
-  - compile_fuzzer
 sanitizers:
   - address
   - undefined

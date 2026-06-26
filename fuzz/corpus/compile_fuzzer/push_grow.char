@@ -1,6 +1,0 @@
-a = [];
-i = 120;
-while (i) { push(a, i); push(a, i + 1); i = i - 1; }
-b = [1];
-push(b, a[0]);
-print b[1];

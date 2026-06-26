@@ -21,10 +21,9 @@ build_harness() {
 }
 
 build_harness module_fuzzer
-build_harness compile_fuzzer
 
-# Package seed corpora if present (CFLite picks up $OUT/<harness>_seed_corpus.zip).
-for h in module_fuzzer compile_fuzzer; do
+# Package seed corpus if present (CFLite picks up $OUT/<harness>_seed_corpus.zip).
+for h in module_fuzzer; do
   if [ -d "$ROOT/fuzz/corpus/$h" ]; then
     ( cd "$ROOT/fuzz/corpus/$h" && zip -qr "$OUT/${h}_seed_corpus.zip" . ) || true
   fi

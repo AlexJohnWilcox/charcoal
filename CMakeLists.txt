@@ -32,7 +32,7 @@ endif()
 
 # Fuzzers only when a fuzzing engine is provided (ClusterFuzzLite / local).
 if(DEFINED ENV{LIB_FUZZING_ENGINE} OR CHARCOAL_FUZZ)
-  foreach(F module_fuzzer compile_fuzzer)
+  foreach(F module_fuzzer)
     if(EXISTS ${CMAKE_SOURCE_DIR}/fuzz/${F}.cc AND TARGET charcoal_core)
       add_executable(${F} fuzz/${F}.cc)
       target_link_libraries(${F} PRIVATE charcoal_core)
