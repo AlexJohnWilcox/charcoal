@@ -15,6 +15,7 @@ void test_verifier();
 void test_interp();
 void test_e2e();
 void test_gc();
+void test_native();
 
 int main() {
   test_value();
@@ -29,6 +30,7 @@ int main() {
   test_verifier();
   test_interp();
   test_e2e();
+  test_native();
 
   if (g_failures) {
     std::fprintf(stderr, "%d failure(s)\n", g_failures);

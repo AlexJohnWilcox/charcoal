@@ -77,6 +77,7 @@ bool operands_of(uint8_t op, std::vector<Operand>& ops) {
       ops = {Operand::Reg, Operand::ConstStr, Operand::Reg};
       break;
     case OP_CALL:
+    case OP_CALL_NATIVE:
       ops = {Operand::Reg, Operand::ConstStr, Operand::Count};
       break;
     case OP_JUMP:
@@ -132,14 +133,16 @@ VerifyResult verify_fn(const Module& m, const Function& f) {
     if (pc + 1 + nops > len) return err("truncated instruction");
 
     size_t at = pc + 1;
-    // For CALL we need the base register and count together for the window check.
+    // For CALL/CALL_NATIVE we need the base register and count together for the
+    // window check.
+    bool is_call = (op == OP_CALL || op == OP_CALL_NATIVE);
     int call_base = -1, call_n = -1;
     for (Operand o : ops) {
       switch (o) {
         case Operand::Reg: {
           uint8_t r = code[at];
           if (r >= f.num_regs) return err("register operand out of range");
-          if (op == OP_CALL) call_base = r;
+          if (is_call) call_base = r;
           break;
         }
         case Operand::Const: {
@@ -154,7 +157,7 @@ VerifyResult verify_fn(const Module& m, const Function& f) {
           break;
         }
         case Operand::Count:
-          if (op == OP_CALL) call_n = code[at];
+          if (is_call) call_n = code[at];
           break;
         case Operand::Jump: {
           int16_t off = static_cast<int16_t>(code[at] | (code[at + 1] << 8));
@@ -165,8 +168,8 @@ VerifyResult verify_fn(const Module& m, const Function& f) {
       at += width(o);
     }
 
-    // CALL: the argument window [base, base+n) must fit in the register file.
-    if (op == OP_CALL) {
+    // CALL/CALL_NATIVE: the argument window [base, base+n) must fit the regs.
+    if (is_call) {
       if (call_base + call_n > f.num_regs) return err("call register window out of range");
     }
 

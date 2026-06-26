@@ -1,5 +1,7 @@
 #include "compiler.h"
 
+#include "native.h"
+
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -264,17 +266,31 @@ struct Compiler {
           emit(OP_LOAD_NIL); emit_r(dst);  // push evaluates to nil
           break;
         }
-        auto it = func_index.find(n->str);
-        if (it == func_index.end()) { fail("call to unknown function: " + n->str); return; }
+
+        // Resolution order: push (above) -> builtin -> user function -> error.
         int count = static_cast<int>(n->kids.size());
         if (count > kMaxCount) { fail("too many arguments"); return; }
+        const NativeEntry* native = find_native(n->str);
+        bool is_native = (native != nullptr);
+        if (!is_native && func_index.find(n->str) == func_index.end()) {
+          fail("call to unknown function: " + n->str);
+          return;
+        }
+        if (is_native && (count < native->arity_min || count > native->arity_max)) {
+          fail("wrong number of arguments to " + n->str);
+          return;
+        }
+
+        // Identical codegen to OP_CALL: args into consecutive regs base..base+n,
+        // result lands in base.
         int base = reg_top;
         for (int a = 0; a < count; ++a) {
           reg_top = base + a + 1; use(reg_top);
           compile_expr(n->kids[a], base + a);
         }
         use(base + 1);  // result lands in base, even with no args
-        emit(OP_CALL); emit_r(base); emit_k(k_str(n->str)); emit_n(count);
+        emit(is_native ? OP_CALL_NATIVE : OP_CALL);
+        emit_r(base); emit_k(k_str(n->str)); emit_n(count);
         reg_top = base;
         if (dst != base) { emit(OP_MOVE); emit_r(dst); emit_r(base); }
         break;

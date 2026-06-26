@@ -61,6 +61,7 @@ enum Op : uint8_t {
   OP_ARRAY_PUSH = 0x26,  // r_arr, r_val : append r_val to the array in r_arr
   OP_CALL       = 0x30,  // r, k, n     (call const[k] by name->index)
   OP_RET        = 0x31,  // r
+  OP_CALL_NATIVE = 0x32, // base, k, n  (call builtin const[k] with n args at base)
   OP_JUMP       = 0x40,  // o
   OP_JUMP_IF_FALSE = 0x41,  // r, o
   OP_PRINT      = 0x50,  // r

@@ -1,5 +1,6 @@
 #include "interp.h"
 
+#include "native.h"
 #include "object.h"
 
 #include <cmath>
@@ -519,6 +520,28 @@ RunResult run(const Module& m, Heap& h, Limits limits) {
         frames[caller].pc += 5;  // resume past the CALL when the callee returns
         frames.push_back(std::move(cf));
         continue;  // re-grab the new top frame
+      }
+
+      case OP_CALL_NATIVE: {
+        int base = u8at(1);
+        uint16_t k = u16at(2);
+        int n = u8at(4);
+        const NativeEntry* e = find_native(m.consts[k].s);
+        if (!e) { res.error = "unknown builtin"; break; }  // compiler/verifier prevent this
+        if (n < e->arity_min || n > e->arity_max) { res.error = "wrong arg count"; break; }
+        Value out = Value::nil();
+        std::string err;
+        // args point into the rooted register window; the native obeys the
+        // safepoint rule internally. No allocation happens between its return
+        // and the store below, so `out` can't go stale.
+        if (!e->fn(&fr.regs[base], static_cast<uint32_t>(n), h, out, err)) {
+          res.error = err.empty() ? "builtin error" : err;
+          break;
+        }
+        fr.regs[base] = out;
+        if (h.over_cap()) { res.error = "out of memory"; break; }
+        fr.pc += 5;
+        break;
       }
 
       case OP_RET: {
