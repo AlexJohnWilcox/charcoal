@@ -31,4 +31,9 @@ void test_lexer() {
   auto kw = lex("ifx if", 6);
   CHECK(kw.tokens[0].kind == Tok::Ident);  // "ifx" is not a keyword
   CHECK(kw.tokens[1].kind == Tok::KwIf);
+
+  // Overflowing integer literal must be a structured error, never an abort.
+  std::string big(40, '9');
+  auto of = lex(big.c_str(), big.size());
+  CHECK(!of.error.empty());
 }
