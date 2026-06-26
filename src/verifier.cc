@@ -38,6 +38,7 @@ bool operands_of(uint8_t op, std::vector<Operand>& ops) {
       ops = {Operand::Reg};
       break;
     case OP_MOVE:
+    case OP_ARRAY_PUSH:
       ops = {Operand::Reg, Operand::Reg};
       break;
     case OP_NEW_ARRAY:

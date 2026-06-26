@@ -184,6 +184,19 @@ struct Compiler {
         break;
       }
       case NodeKind::Call: {
+        // `push(array, value)` is a reserved builtin (wins over any user fn).
+        if (n->str == "push") {
+          if (n->kids.size() != 2) { fail("push expects (array, value)"); return; }
+          int save = reg_top;
+          int ra = reg_top, rv = reg_top + 1;
+          reg_top += 2; use(reg_top);
+          compile_expr(n->kids[0], ra);
+          compile_expr(n->kids[1], rv);
+          emit(OP_ARRAY_PUSH); emit_r(ra); emit_r(rv);
+          reg_top = save;
+          emit(OP_LOAD_NIL); emit_r(dst);  // push evaluates to nil
+          break;
+        }
         auto it = func_index.find(n->str);
         if (it == func_index.end()) { fail("call to unknown function: " + n->str); return; }
         int count = static_cast<int>(n->kids.size());

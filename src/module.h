@@ -46,6 +46,7 @@ enum Op : uint8_t {
   OP_NEW_OBJECT = 0x23,  // r
   OP_GET_PROP   = 0x24,  // r, r2, k
   OP_SET_PROP   = 0x25,  // r, k, r2    (r.k = r2)
+  OP_ARRAY_PUSH = 0x26,  // r_arr, r_val : append r_val to the array in r_arr
   OP_CALL       = 0x30,  // r, k, n     (call const[k] by name->index)
   OP_RET        = 0x31,  // r
   OP_JUMP       = 0x40,  // o
