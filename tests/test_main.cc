@@ -6,11 +6,13 @@ int g_failures = 0;
 void test_value();
 void test_object();
 void test_heap();
+void test_lexer();
 
 int main() {
   test_value();
   test_object();
   test_heap();
+  test_lexer();
 
   if (g_failures) {
     std::fprintf(stderr, "%d failure(s)\n", g_failures);
