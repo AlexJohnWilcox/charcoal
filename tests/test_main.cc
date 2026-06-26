@@ -11,6 +11,7 @@ void test_parser();
 void test_compiler();
 void test_module_roundtrip();
 void test_loader();
+void test_verifier();
 
 int main() {
   test_value();
@@ -21,6 +22,7 @@ int main() {
   test_compiler();
   test_module_roundtrip();
   test_loader();
+  test_verifier();
 
   if (g_failures) {
     std::fprintf(stderr, "%d failure(s)\n", g_failures);
