@@ -56,4 +56,19 @@ void test_interp() {
 
   // Infinite loop -> instruction budget stops it (no hang).
   { auto r = SRC("while (1) {}"); CHECK(!r.ok); }
+
+  // ARRAY_PUSH: append grows the backing store and preserves elements.
+  { auto r = SRC("a = [1, 2]; push(a, 3); push(a, 4); push(a, 5); print a[4];");
+    CHECK(r.ok); CHECK(r.output == "5"); }
+
+  // push onto an empty array literal, then read back.
+  { auto r = SRC("a = []; push(a, 7); push(a, 8); push(a, 9); print a[0] + a[1] + a[2];");
+    CHECK(r.ok); CHECK(r.output == "24"); }
+
+  // push evaluates to nil.
+  { auto r = SRC("a = []; x = push(a, 1); if (x) { print 1; } else { print 0; }");
+    CHECK(r.ok); CHECK(r.output == "0"); }
+
+  // push on a non-array is a runtime error, not a crash.
+  { auto r = SRC("x = 5; push(x, 1);"); CHECK(!r.ok); }
 }
