@@ -65,4 +65,30 @@ void test_lexer() {
     CHECK(t.tokens[0].kind == Tok::Lt);
     CHECK(t.tokens.back().kind == Tok::Eof);
   }
+
+  // --- A4: source spans (1-based columns) ---
+
+  // "cd" in "ab cd" begins at column 4.
+  {
+    auto cr = lex("ab cd", 5);
+    CHECK(cr.error.empty());
+    CHECK(cr.tokens[0].col == 1);   // "ab"
+    CHECK(cr.tokens[1].col == 4);   // "cd"
+  }
+
+  // Columns reset after a newline.
+  {
+    auto cr = lex("a\nbc", 4);
+    CHECK(cr.error.empty());
+    CHECK(cr.tokens[0].line == 1 && cr.tokens[0].col == 1);  // "a"
+    CHECK(cr.tokens[1].line == 2 && cr.tokens[1].col == 1);  // "bc"
+  }
+
+  // A lex error carries line/col and a "line:col:" message prefix.
+  {
+    auto cr = lex("  @", 3);
+    CHECK(!cr.error.empty());
+    CHECK(cr.err_line == 1 && cr.err_col == 3);
+    CHECK(cr.error.rfind("1:3:", 0) == 0);  // message starts with the span
+  }
 }

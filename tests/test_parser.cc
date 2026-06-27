@@ -150,4 +150,15 @@ void test_parser() {
     CHECK(body->kids[0]->kind == NodeKind::Break);
     CHECK(body->kids[1]->kind == NodeKind::Continue);
   }
+
+  // --- A4: a parse error reports a line:col-prefixed message ---
+  {
+    auto l = lex("print 1 +", 9);
+    auto r = parse(l.tokens);
+    CHECK(!r.error.empty());
+    CHECK(r.err_line >= 1);
+    CHECK(r.err_col >= 1);
+    std::string prefix = std::to_string(r.err_line) + ":";
+    CHECK(r.error.rfind(prefix, 0) == 0);  // message begins with "<line>:"
+  }
 }

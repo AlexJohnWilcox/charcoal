@@ -92,7 +92,11 @@ struct Parser {
   }
 
   void fail(const char* msg) {
-    if (r.error.empty()) { r.error = msg; r.err_line = peek().line; }
+    if (r.error.empty()) {
+      r.err_line = peek().line;
+      r.err_col = peek().col;
+      r.error = std::to_string(r.err_line) + ":" + std::to_string(r.err_col) + ": " + msg;
+    }
   }
 
   bool expect(Tok k, const char* msg) {

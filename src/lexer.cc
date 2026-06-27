@@ -13,6 +13,11 @@ bool is_alpha(char c) {
 }
 bool is_alnum(char c) { return is_alpha(c) || is_digit(c); }
 
+// "line:col: message" — the standard diagnostic prefix used across the front end.
+std::string diag(int line, int col, const std::string& msg) {
+  return std::to_string(line) + ":" + std::to_string(col) + ": " + msg;
+}
+
 Tok keyword(const char* s, size_t len) {
   std::string w(s, len);
   if (w == "fn")     return Tok::KwFn;
@@ -37,6 +42,10 @@ LexResult lex(const char* src, size_t n) {
   LexResult r;
   size_t i = 0;
   int line = 1;
+  size_t line_start = 0;  // byte offset of the current line's first byte
+
+  // 1-based column of byte offset `off` within the current line.
+  auto col_of = [&](size_t off) { return static_cast<int>(off - line_start) + 1; };
 
   auto push = [&](Tok k, const char* start, size_t len) {
     Token t{};
@@ -44,8 +53,15 @@ LexResult lex(const char* src, size_t n) {
     t.start = start;
     t.len = static_cast<uint32_t>(len);
     t.line = line;
+    t.col = col_of(static_cast<size_t>(start - src));
     r.tokens.push_back(t);
     return &r.tokens.back();
+  };
+
+  auto set_error = [&](size_t off, const char* msg) {
+    r.err_line = line;
+    r.err_col = col_of(off);
+    r.error = diag(r.err_line, r.err_col, msg);
   };
 
   while (i < n) {
@@ -53,7 +69,7 @@ LexResult lex(const char* src, size_t n) {
 
     // Whitespace.
     if (c == ' ' || c == '\t' || c == '\r') { ++i; continue; }
-    if (c == '\n') { ++line; ++i; continue; }
+    if (c == '\n') { ++line; ++i; line_start = i; continue; }
 
     // Line comment.
     if (c == '/' && i + 1 < n && src[i + 1] == '/') {
@@ -78,8 +94,7 @@ LexResult lex(const char* src, size_t n) {
         if (is_float) t->dval = std::stod(num);
         else          t->ival = std::stoll(num);
       } catch (const std::out_of_range&) {
-        r.error = "number literal out of range";
-        r.err_line = line;
+        set_error(start, "number literal out of range");
         return r;
       }
       continue;
@@ -101,12 +116,11 @@ LexResult lex(const char* src, size_t n) {
       while (i < n) {
         if (src[i] == '\\' && i + 1 < n) { i += 2; continue; }
         if (src[i] == '"') { ++i; closed = true; break; }
-        if (src[i] == '\n') ++line;
+        if (src[i] == '\n') { ++line; line_start = i + 1; }
         ++i;
       }
       if (!closed) {
-        r.error = "unterminated string";
-        r.err_line = line;
+        set_error(start, "unterminated string");
         return r;
       }
       push(Tok::Str, src + start, i - start);
@@ -150,8 +164,7 @@ LexResult lex(const char* src, size_t n) {
         else k = Tok::Gt;
         break;
       default:
-        r.error = "unexpected character";
-        r.err_line = line;
+        set_error(i, "unexpected character");
         return r;
     }
     push(k, src + i, oplen);

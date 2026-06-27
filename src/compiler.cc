@@ -36,9 +36,15 @@ struct Compiler {
   };
   std::vector<LoopCtx> loops;
 
+  int cur_line = 0;  // source line of the node currently being compiled
+
   void fail(const std::string& msg) {
-    if (error.empty()) error = msg;
+    if (error.empty()) {
+      err_line = cur_line;
+      error = (cur_line > 0) ? std::to_string(cur_line) + ": " + msg : msg;
+    }
   }
+  int err_line = 0;
   bool failed() const { return !error.empty(); }
 
   void use(int upto) { if (upto > high_water) high_water = upto; }
@@ -105,6 +111,7 @@ struct Compiler {
 
   void compile_expr(const Node* n, int dst) {
     if (failed()) return;
+    if (n->line > 0) cur_line = n->line;
     switch (n->kind) {
       case NodeKind::IntLit:
         emit(OP_LOAD_CONST); emit_r(dst); emit_k(k_int(n->ival));
@@ -313,6 +320,7 @@ struct Compiler {
 
   void compile_stmt(const Node* n) {
     if (failed()) return;
+    if (n->line > 0) cur_line = n->line;
     switch (n->kind) {
       case NodeKind::Print: {
         int save = reg_top, t = reg_top;
@@ -558,6 +566,7 @@ CompileResult compile(const Node* program) {
   }
   c.run(program);
   c.result.error = c.error;
+  c.result.err_line = c.err_line;
   c.result.ok = c.error.empty();
   return c.result;
 }

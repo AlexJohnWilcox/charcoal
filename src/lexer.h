@@ -10,6 +10,7 @@ struct LexResult {
   std::vector<Token> tokens;  // always ends with a Tok::Eof on success
   std::string        error;   // non-empty iff lexing failed
   int                err_line = 0;
+  int                err_col = 0;
 };
 
 // Tokenize `n` bytes of source. MUST treat input as raw bytes of known length

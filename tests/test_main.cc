@@ -16,6 +16,7 @@ void test_interp();
 void test_e2e();
 void test_gc();
 void test_native();
+void test_disasm();
 
 int main() {
   test_value();
@@ -31,6 +32,7 @@ int main() {
   test_interp();
   test_e2e();
   test_native();
+  test_disasm();
 
   if (g_failures) {
     std::fprintf(stderr, "%d failure(s)\n", g_failures);

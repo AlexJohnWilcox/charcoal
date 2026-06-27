@@ -53,8 +53,9 @@ struct Node {
 
 struct ParseResult {
   Node*       program = nullptr;  // a Program node (owned by `arena`)
-  std::string error;              // non-empty iff parsing failed
+  std::string error;              // non-empty iff parsing failed ("line:col: msg")
   int         err_line = 0;
+  int         err_col = 0;
   std::vector<std::unique_ptr<Node>> arena;  // owns every Node
 };
 

@@ -22,6 +22,7 @@ struct Token {
   const char* start;  // points into the source buffer (not owned)
   uint32_t len;
   int      line;
+  int      col = 0;   // 1-based column of the token's first byte
   int64_t  ival;      // valid when kind == Int
   double   dval;      // valid when kind == Float
 };

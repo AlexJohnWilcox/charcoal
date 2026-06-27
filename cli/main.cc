@@ -1,4 +1,6 @@
 #include "charcoal.h"
+#include "disasm.h"
+#include "loader.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -31,7 +33,8 @@ int usage() {
   std::fprintf(stderr,
                "usage:\n"
                "  charcoal compile <in.char> -o <out.cbc>\n"
-               "  charcoal run <module.cbc>\n");
+               "  charcoal run <module.cbc>\n"
+               "  charcoal dis <module.cbc>\n");
   return 1;
 }
 
@@ -71,6 +74,22 @@ int do_run(int argc, char** argv) {
   return 0;
 }
 
+int do_dis(int argc, char** argv) {
+  // charcoal dis <module.cbc>
+  if (argc != 3) return usage();
+  std::vector<uint8_t> cbc;
+  std::string err;
+  if (!read_file(argv[2], cbc, err)) { std::fprintf(stderr, "%s\n", err.c_str()); return 1; }
+
+  coal::LoadResult ld = coal::load_cbc(cbc.data(), cbc.size());
+  if (!ld.ok) {
+    std::fprintf(stderr, "load error: %s\n", ld.error.c_str());
+    return 1;
+  }
+  std::fputs(coal::disassemble(ld.module).c_str(), stdout);
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -78,5 +97,6 @@ int main(int argc, char** argv) {
   std::string cmd = argv[1];
   if (cmd == "compile") return do_compile(argc, argv);
   if (cmd == "run")     return do_run(argc, argv);
+  if (cmd == "dis")     return do_dis(argc, argv);
   return usage();
 }
