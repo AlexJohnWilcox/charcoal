@@ -11,6 +11,66 @@
 #include <string>
 #include <vector>
 
+// ============================================================================
+//  native.cc — Charcoal standard library (the C++ builtins)
+// ============================================================================
+//
+//  Every builtin is a `NativeFn`:
+//
+//      bool fn(Value* args, uint32_t argc, Heap& h, Value& out, std::string& err)
+//
+//  It reads `argc` arguments from `args`, writes its result into `out`, and
+//  returns true on success. On failure it returns false and sets `err`, which
+//  the interpreter turns into a structured runtime error (never a crash). The
+//  interpreter has already validated the arity (against the registry below) and
+//  that `args[0..argc)` are real registers, so a fixed-arity builtin may read
+//  exactly its declared number of arguments without further bounds checks.
+//
+//  ------------------------------------------------------------------------
+//  The safepoint rule (the single most important invariant in this file)
+//  ------------------------------------------------------------------------
+//  Charcoal uses a moving (Cheney semispace) garbage collector. A collection
+//  can fire ONLY inside a `Heap::new_*` call, and when it does it relocates
+//  EVERY live object. Therefore any raw `Object*` or `Value` holding an object
+//  pointer that was read BEFORE an allocation is dangling AFTER it.
+//
+//  Two disciplines keep the builtins correct:
+//
+//    * Single-allocation builtins read every scalar they need out of `args`
+//      first, build the result LAST, and return. Because nothing is allocated
+//      after the result, no pointer can go stale. (Most builtins are this kind.)
+//
+//    * Multi-allocation builtins (split, lines, zip, enumerate, flatten, chunk,
+//      chars, entries, merge, invert, pick, ...) root the growing result in a
+//      `HandleScope` and RE-READ the result and every source argument from a
+//      root after EACH `new_*`. Source string/key bytes are copied into C++
+//      `std::string` locals up front, since those live in non-moving system
+//      memory and stay valid across collections.
+//
+//  Helpers below marked with the word "safepoint" allocate and therefore must
+//  be treated as collection points by their callers.
+//
+//  ------------------------------------------------------------------------
+//  Builtin index (registered in kNatives[] at the bottom of this file)
+//  ------------------------------------------------------------------------
+//  type/convert : type to_string to_int to_float is_nil is_num is_str
+//                 is_array is_map is_int is_bool
+//  math         : abs min max floor ceil round sqrt pow sign clamp gcd lcm
+//                 exp log log2 log10 sin cos tan atan2 hypot trunc factorial
+//                 is_prime fib cbrt deg2rad rad2deg log_base mean
+//  string       : len substr char_at index_of contains starts_with ends_with
+//                 upper lower repeat str_concat split join trim ord chr replace
+//                 last_index_of pad_left pad_right count_sub capitalize
+//                 reverse_str lines is_empty swapcase title_case zfill center
+//                 chars to_bytes format is_digit is_alpha is_alnum is_space
+//  array        : pop insert remove slice reverse sort arr_index_of range fill
+//                 concat_arr sum product min_of max_of first last take drop
+//                 count_of any all includes index_min index_max zip enumerate
+//                 flatten unique rotate chunk
+//  map          : keys values has remove_key get set merge entries invert pick
+//
+// ============================================================================
+
 namespace coal {
 
 namespace {
@@ -92,6 +152,7 @@ bool val_equal(const Value& x, const Value& y) {
 }
 
 constexpr int64_t kI64Max = 9223372036854775807LL;
+constexpr double  kPi = 3.14159265358979323846;
 
 // =======================================================================
 // Type / convert
@@ -197,21 +258,45 @@ bool abs_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
   return false;
 }
 
+// min/max preserve integer type when both arguments are integers, and otherwise
+// fall back to a double comparison (so `min(2, 1.5)` returns the double 1.5).
 bool min_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
-  if (!is_num(a[0]) || !is_num(a[1])) { err = "min expects numbers"; return false; }
-  if (a[0].tag == Tag::Int && a[1].tag == Tag::Int)
-    out = Value::integer(std::min(a[0].as.i, a[1].as.i));
-  else
-    out = Value::number(std::min(to_double(a[0]), to_double(a[1])));
+  const Value& lhs = a[0];
+  const Value& rhs = a[1];
+  if (!is_num(lhs) || !is_num(rhs)) {
+    err = "min expects numbers";
+    return false;
+  }
+  const bool both_int = (lhs.tag == Tag::Int && rhs.tag == Tag::Int);
+  if (both_int) {
+    const int64_t smaller = (lhs.as.i < rhs.as.i) ? lhs.as.i : rhs.as.i;
+    out = Value::integer(smaller);
+  } else {
+    const double a_d = to_double(lhs);
+    const double b_d = to_double(rhs);
+    const double smaller = (a_d < b_d) ? a_d : b_d;
+    out = Value::number(smaller);
+  }
   return true;
 }
 
 bool max_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
-  if (!is_num(a[0]) || !is_num(a[1])) { err = "max expects numbers"; return false; }
-  if (a[0].tag == Tag::Int && a[1].tag == Tag::Int)
-    out = Value::integer(std::max(a[0].as.i, a[1].as.i));
-  else
-    out = Value::number(std::max(to_double(a[0]), to_double(a[1])));
+  const Value& lhs = a[0];
+  const Value& rhs = a[1];
+  if (!is_num(lhs) || !is_num(rhs)) {
+    err = "max expects numbers";
+    return false;
+  }
+  const bool both_int = (lhs.tag == Tag::Int && rhs.tag == Tag::Int);
+  if (both_int) {
+    const int64_t larger = (lhs.as.i > rhs.as.i) ? lhs.as.i : rhs.as.i;
+    out = Value::integer(larger);
+  } else {
+    const double a_d = to_double(lhs);
+    const double b_d = to_double(rhs);
+    const double larger = (a_d > b_d) ? a_d : b_d;
+    out = Value::number(larger);
+  }
   return true;
 }
 
@@ -638,15 +723,50 @@ bool is_bool_fn(Value* a, uint32_t, Heap&, Value& out, std::string&) { out = Val
 
 // --- math ---
 
+// clamp(x, lo, hi): constrain x to the inclusive range [lo, hi]. The bounds are
+// validated, and integer inputs are kept as integers so `clamp(15, 0, 10)`
+// returns the integer 10 rather than 10.0.
 bool clamp_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
-  if (!is_num(a[0]) || !is_num(a[1]) || !is_num(a[2])) { err = "clamp expects numbers"; return false; }
-  if (to_double(a[1]) > to_double(a[2])) { err = "clamp: lo > hi"; return false; }
-  if (a[0].tag == Tag::Int && a[1].tag == Tag::Int && a[2].tag == Tag::Int) {
-    int64_t x = a[0].as.i, lo = a[1].as.i, hi = a[2].as.i;
-    out = Value::integer(x < lo ? lo : (x > hi ? hi : x));
+  const Value& value = a[0];
+  const Value& lo = a[1];
+  const Value& hi = a[2];
+
+  if (!is_num(value) || !is_num(lo) || !is_num(hi)) {
+    err = "clamp expects numbers";
+    return false;
+  }
+  if (to_double(lo) > to_double(hi)) {
+    err = "clamp: lo > hi";
+    return false;
+  }
+
+  const bool all_int = (value.tag == Tag::Int && lo.tag == Tag::Int && hi.tag == Tag::Int);
+  if (all_int) {
+    const int64_t x = value.as.i;
+    const int64_t lower = lo.as.i;
+    const int64_t upper = hi.as.i;
+    int64_t result;
+    if (x < lower) {
+      result = lower;
+    } else if (x > upper) {
+      result = upper;
+    } else {
+      result = x;
+    }
+    out = Value::integer(result);
   } else {
-    double x = to_double(a[0]), lo = to_double(a[1]), hi = to_double(a[2]);
-    out = Value::number(x < lo ? lo : (x > hi ? hi : x));
+    const double x = to_double(value);
+    const double lower = to_double(lo);
+    const double upper = to_double(hi);
+    double result;
+    if (x < lower) {
+      result = lower;
+    } else if (x > upper) {
+      result = upper;
+    } else {
+      result = x;
+    }
+    out = Value::number(result);
   }
   return true;
 }
@@ -1043,6 +1163,484 @@ bool entries_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
 }
 
 // =======================================================================
+// Batch 3 — extended math / sequence / string utilities
+//
+// Same rules as the earlier batches: single-allocation builtins read their
+// scalars from `args` first and allocate the result last; multi-allocation
+// builtins root the growing result in a HandleScope and re-read both the result
+// and any source argument after every `new_*`.
+// =======================================================================
+
+// --- math ---
+
+// n! as an int64. 20! is the largest factorial that fits in a signed 64-bit
+// integer, so anything larger is rejected rather than silently overflowing.
+bool factorial_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (a[0].tag != Tag::Int) { err = "factorial expects an integer"; return false; }
+  int64_t n = a[0].as.i;
+  if (n < 0) { err = "factorial of a negative number"; return false; }
+  if (n > 20) { err = "factorial too large"; return false; }
+  int64_t result = 1;
+  for (int64_t i = 2; i <= n; ++i) result *= i;
+  out = Value::integer(result);
+  return true;
+}
+
+// Trial division up to sqrt(n). Small, exact, and good enough for a scripting
+// builtin; no allocation, so it is always safepoint-safe.
+bool is_prime_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (a[0].tag != Tag::Int) { err = "is_prime expects an integer"; return false; }
+  int64_t n = a[0].as.i;
+  if (n < 2) { out = Value::boolean(false); return true; }
+  if (n < 4) { out = Value::boolean(true); return true; }
+  if ((n % 2) == 0) { out = Value::boolean(false); return true; }
+  for (int64_t d = 3; d <= n / d; d += 2) {
+    if ((n % d) == 0) { out = Value::boolean(false); return true; }
+  }
+  out = Value::boolean(true);
+  return true;
+}
+
+// nth Fibonacci number. fib(92) is the largest that fits in a signed 64-bit
+// integer; beyond that we report an error instead of wrapping.
+bool fib_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (a[0].tag != Tag::Int) { err = "fib expects an integer"; return false; }
+  int64_t n = a[0].as.i;
+  if (n < 0) { err = "fib of a negative number"; return false; }
+  if (n > 92) { err = "fib too large"; return false; }
+  int64_t prev = 0, cur = 1;
+  for (int64_t i = 0; i < n; ++i) {
+    int64_t next = prev + cur;
+    prev = cur;
+    cur = next;
+  }
+  out = Value::integer(prev);
+  return true;
+}
+
+bool cbrt_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0])) { err = "cbrt expects a number"; return false; }
+  out = Value::number(std::cbrt(to_double(a[0])));
+  return true;
+}
+
+bool deg2rad_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0])) { err = "deg2rad expects a number"; return false; }
+  out = Value::number(to_double(a[0]) * (kPi / 180.0));
+  return true;
+}
+
+bool rad2deg_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0])) { err = "rad2deg expects a number"; return false; }
+  out = Value::number(to_double(a[0]) * (180.0 / kPi));
+  return true;
+}
+
+bool log_base_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0]) || !is_num(a[1])) { err = "log_base expects numbers"; return false; }
+  double x = to_double(a[0]);
+  double base = to_double(a[1]);
+  if (x <= 0) { err = "log_base domain error"; return false; }
+  if (base <= 0 || base == 1) { err = "log_base: invalid base"; return false; }
+  out = Value::number(std::log(x) / std::log(base));
+  return true;
+}
+
+bool mean_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "mean expects an array"; return false; }
+  ArrayObj* arr = as_arr(a[0]);
+  if (arr->len == 0) { err = "mean of empty array"; return false; }
+  double total = 0;
+  for (uint32_t i = 0; i < arr->len; ++i) {
+    const Value& e = arr->slots->data[i];
+    if (!is_num(e)) { err = "mean expects numbers"; return false; }
+    total += to_double(e);
+  }
+  out = Value::number(total / static_cast<double>(arr->len));
+  return true;
+}
+
+// --- array reductions / predicates (no allocation) ---
+
+bool any_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "any expects an array"; return false; }
+  ArrayObj* arr = as_arr(a[0]);
+  for (uint32_t i = 0; i < arr->len; ++i)
+    if (arr->slots->data[i].truthy()) { out = Value::boolean(true); return true; }
+  out = Value::boolean(false);
+  return true;
+}
+
+bool all_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "all expects an array"; return false; }
+  ArrayObj* arr = as_arr(a[0]);
+  for (uint32_t i = 0; i < arr->len; ++i)
+    if (!arr->slots->data[i].truthy()) { out = Value::boolean(false); return true; }
+  out = Value::boolean(true);
+  return true;
+}
+
+bool includes_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "includes expects an array"; return false; }
+  ArrayObj* arr = as_arr(a[0]);
+  for (uint32_t i = 0; i < arr->len; ++i)
+    if (val_equal(arr->slots->data[i], a[1])) { out = Value::boolean(true); return true; }
+  out = Value::boolean(false);
+  return true;
+}
+
+bool index_extreme(Value* a, bool want_min, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "expects an array"; return false; }
+  ArrayObj* arr = as_arr(a[0]);
+  if (arr->len == 0) { err = "empty array"; return false; }
+  if (!is_num(arr->slots->data[0])) { err = "expects numbers"; return false; }
+  uint32_t best = 0;
+  double bd = to_double(arr->slots->data[0]);
+  for (uint32_t i = 1; i < arr->len; ++i) {
+    const Value& e = arr->slots->data[i];
+    if (!is_num(e)) { err = "expects numbers"; return false; }
+    double d = to_double(e);
+    if ((want_min && d < bd) || (!want_min && d > bd)) { best = i; bd = d; }
+  }
+  out = Value::integer(best);
+  return true;
+}
+bool index_min_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) { return index_extreme(a, true,  out, err); }
+bool index_max_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) { return index_extreme(a, false, out, err); }
+
+// --- array transforms (allocate) ---
+
+// zip/enumerate: outer array of 2-element pairs. The outer array is rooted; each
+// inner pair allocation can move the outer array AND the sources, so they are
+// all re-read after every pair allocation.
+bool zip_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0]) || !is_array(a[1])) { err = "zip expects two arrays"; return false; }
+  uint32_t la = as_arr(a[0])->len, lb = as_arr(a[1])->len;
+  uint32_t n = la < lb ? la : lb;
+  Value rv;
+  if (!make_array(h, n, rv, err)) return false;  // safepoint
+  HandleScope hs(h);
+  size_t ri = hs.root(rv.as.obj);
+  for (uint32_t i = 0; i < n; ++i) {
+    Value pair;
+    if (!make_array(h, 2, pair, err)) return false;  // safepoint: moves result + sources
+    ArrayObj* p = static_cast<ArrayObj*>(pair.as.obj);
+    p->slots->data[0] = as_arr(a[0])->slots->data[i];  // re-read sources
+    p->slots->data[1] = as_arr(a[1])->slots->data[i];
+    hs.get<ArrayObj>(ri)->slots->data[i] = Value::object(p);  // re-read result
+  }
+  out = Value::object(hs.get<ArrayObj>(ri));
+  return true;
+}
+
+bool enumerate_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "enumerate expects an array"; return false; }
+  uint32_t n = as_arr(a[0])->len;
+  Value rv;
+  if (!make_array(h, n, rv, err)) return false;  // safepoint
+  HandleScope hs(h);
+  size_t ri = hs.root(rv.as.obj);
+  for (uint32_t i = 0; i < n; ++i) {
+    Value pair;
+    if (!make_array(h, 2, pair, err)) return false;  // safepoint
+    ArrayObj* p = static_cast<ArrayObj*>(pair.as.obj);
+    p->slots->data[0] = Value::integer(i);
+    p->slots->data[1] = as_arr(a[0])->slots->data[i];  // re-read source
+    hs.get<ArrayObj>(ri)->slots->data[i] = Value::object(p);  // re-read result
+  }
+  out = Value::object(hs.get<ArrayObj>(ri));
+  return true;
+}
+
+// flatten one level: the total length is computed up front (no allocation), so
+// after the single result allocation the source is copied in one pass with no
+// further allocation and stays valid throughout.
+bool flatten_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "flatten expects an array"; return false; }
+  ArrayObj* src = as_arr(a[0]);
+  uint64_t total = 0;
+  for (uint32_t i = 0; i < src->len; ++i) {
+    const Value& e = src->slots->data[i];
+    total += is_array(e) ? as_arr(e)->len : 1;
+  }
+  if (total > 0xFFFFFFFFu) { err = "flatten result too large"; return false; }
+  Value rv;
+  if (!make_array(h, static_cast<uint32_t>(total), rv, err)) return false;  // safepoint
+  ArrayObj* r = static_cast<ArrayObj*>(rv.as.obj);
+  src = as_arr(a[0]);  // re-read after the alloc
+  uint32_t w = 0;
+  for (uint32_t i = 0; i < src->len; ++i) {
+    const Value& e = src->slots->data[i];
+    if (is_array(e)) {
+      ArrayObj* sub = as_arr(e);
+      for (uint32_t j = 0; j < sub->len; ++j) r->slots->data[w++] = sub->slots->data[j];
+    } else {
+      r->slots->data[w++] = e;
+    }
+  }
+  out = rv;
+  return true;
+}
+
+// distinct values by value-equality. The surviving indices are collected first
+// (no allocation), then copied into a single result array.
+bool unique_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "unique expects an array"; return false; }
+  ArrayObj* src = as_arr(a[0]);
+  std::vector<uint32_t> keep;
+  for (uint32_t i = 0; i < src->len; ++i) {
+    bool seen = false;
+    for (uint32_t k : keep) {
+      if (val_equal(src->slots->data[k], src->slots->data[i])) { seen = true; break; }
+    }
+    if (!seen) keep.push_back(i);
+  }
+  Value rv;
+  if (!make_array(h, static_cast<uint32_t>(keep.size()), rv, err)) return false;  // safepoint
+  ArrayObj* r = static_cast<ArrayObj*>(rv.as.obj);
+  src = as_arr(a[0]);  // re-read after the alloc
+  for (size_t i = 0; i < keep.size(); ++i) r->slots->data[i] = src->slots->data[keep[i]];
+  out = rv;
+  return true;
+}
+
+bool rotate_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "rotate expects an array"; return false; }
+  if (!is_num(a[1])) { err = "rotate amount must be a number"; return false; }
+  uint32_t len = as_arr(a[0])->len;
+  Value rv;
+  if (!make_array(h, len, rv, err)) return false;  // safepoint
+  if (len == 0) { out = rv; return true; }
+  // Normalize the (possibly negative) shift into [0, len) using modular math.
+  int64_t raw = as_i64(a[1]) % static_cast<int64_t>(len);
+  uint32_t shift = static_cast<uint32_t>((raw + static_cast<int64_t>(len)) % static_cast<int64_t>(len));
+  ArrayObj* r = static_cast<ArrayObj*>(rv.as.obj);
+  ArrayObj* src = as_arr(a[0]);  // re-read after the alloc
+  for (uint32_t i = 0; i < len; ++i) r->slots->data[i] = src->slots->data[(i + shift) % len];
+  out = rv;
+  return true;
+}
+
+// chunk: outer array of fixed-size sub-arrays (the final chunk may be shorter).
+// Outer rooted; each inner chunk allocation re-reads the outer array + source.
+bool chunk_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "chunk expects an array"; return false; }
+  if (!is_num(a[1])) { err = "chunk size must be a number"; return false; }
+  int64_t size = as_i64(a[1]);
+  if (size <= 0) { err = "chunk size must be positive"; return false; }
+  uint32_t len = as_arr(a[0])->len;
+  uint32_t usize = static_cast<uint32_t>(size);
+  uint32_t nchunks = (len + usize - 1) / usize;
+  Value rv;
+  if (!make_array(h, nchunks, rv, err)) return false;  // safepoint
+  HandleScope hs(h);
+  size_t ri = hs.root(rv.as.obj);
+  for (uint32_t c = 0; c < nchunks; ++c) {
+    uint32_t start = c * usize;
+    uint32_t clen = (len - start < usize) ? (len - start) : usize;
+    Value child;
+    if (!make_array(h, clen, child, err)) return false;  // safepoint: moves result + source
+    ArrayObj* ch = static_cast<ArrayObj*>(child.as.obj);
+    ArrayObj* src = as_arr(a[0]);  // re-read source
+    for (uint32_t j = 0; j < clen; ++j) ch->slots->data[j] = src->slots->data[start + j];
+    hs.get<ArrayObj>(ri)->slots->data[c] = Value::object(ch);  // re-read result
+  }
+  out = Value::object(hs.get<ArrayObj>(ri));
+  return true;
+}
+
+// --- string predicates (no allocation) ---
+
+bool char_class(Value* a, bool (*pred)(unsigned char), const char* name,
+                Value& out, std::string& err) {
+  if (!is_str(a[0])) { err = std::string(name) + " expects a string"; return false; }
+  uint32_t n = slen(a[0]);
+  if (n == 0) { out = Value::boolean(false); return true; }
+  const char* p = sbytes(a[0]);
+  for (uint32_t i = 0; i < n; ++i)
+    if (!pred(static_cast<unsigned char>(p[i]))) { out = Value::boolean(false); return true; }
+  out = Value::boolean(true);
+  return true;
+}
+bool cc_digit(unsigned char c) { return c >= '0' && c <= '9'; }
+bool cc_alpha(unsigned char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+bool cc_alnum(unsigned char c) { return cc_digit(c) || cc_alpha(c); }
+bool cc_space(unsigned char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'; }
+bool is_digit_str_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) { return char_class(a, cc_digit, "is_digit", out, err); }
+bool is_alpha_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err)     { return char_class(a, cc_alpha, "is_alpha", out, err); }
+bool is_alnum_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err)     { return char_class(a, cc_alnum, "is_alnum", out, err); }
+bool is_space_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err)     { return char_class(a, cc_space, "is_space", out, err); }
+
+// --- string transforms (allocate) ---
+
+bool swapcase_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_str(a[0])) { err = "swapcase expects a string"; return false; }
+  std::string s(sbytes(a[0]), slen(a[0]));
+  for (char& c : s) {
+    if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 32);
+    else if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
+  }
+  return make_string(h, s.data(), static_cast<uint32_t>(s.size()), out, err);
+}
+
+bool title_case_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_str(a[0])) { err = "title_case expects a string"; return false; }
+  std::string s(sbytes(a[0]), slen(a[0]));
+  bool at_word_start = true;
+  for (char& c : s) {
+    bool is_letter = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    if (!is_letter) {
+      at_word_start = true;
+    } else if (at_word_start) {
+      if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 32);
+      at_word_start = false;
+    } else {
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
+    }
+  }
+  return make_string(h, s.data(), static_cast<uint32_t>(s.size()), out, err);
+}
+
+bool zfill_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_str(a[0])) { err = "zfill expects a string"; return false; }
+  if (!is_num(a[1])) { err = "zfill width must be a number"; return false; }
+  std::string s(sbytes(a[0]), slen(a[0]));
+  int64_t width = as_i64(a[1]);
+  if (width < 0) width = 0;
+  if (width > (1 << 20)) { err = "zfill width too large"; return false; }
+  std::string r;
+  if (static_cast<uint64_t>(width) <= s.size()) {
+    r = s;
+  } else {
+    r = std::string(static_cast<size_t>(width) - s.size(), '0') + s;
+  }
+  return make_string(h, r.data(), static_cast<uint32_t>(r.size()), out, err);
+}
+
+bool center_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_str(a[0])) { err = "center expects a string"; return false; }
+  if (!is_num(a[1])) { err = "center width must be a number"; return false; }
+  if (!is_str(a[2]) || slen(a[2]) != 1) { err = "center fill must be a 1-char string"; return false; }
+  std::string s(sbytes(a[0]), slen(a[0]));
+  char fill = sbytes(a[2])[0];
+  int64_t width = as_i64(a[1]);
+  if (width < 0) width = 0;
+  if (width > (1 << 20)) { err = "center width too large"; return false; }
+  std::string r;
+  if (static_cast<uint64_t>(width) <= s.size()) {
+    r = s;
+  } else {
+    size_t pad = static_cast<size_t>(width) - s.size();
+    size_t left = pad / 2;
+    size_t right = pad - left;
+    r = std::string(left, fill) + s + std::string(right, fill);
+  }
+  return make_string(h, r.data(), static_cast<uint32_t>(r.size()), out, err);
+}
+
+// chars: array of one-byte strings (multi-alloc; same discipline as split).
+bool chars_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_str(a[0])) { err = "chars expects a string"; return false; }
+  std::string s(sbytes(a[0]), slen(a[0]));  // copy first
+  uint32_t n = static_cast<uint32_t>(s.size());
+  Value rv;
+  if (!make_array(h, n, rv, err)) return false;  // safepoint
+  HandleScope hs(h);
+  size_t ri = hs.root(rv.as.obj);
+  for (uint32_t i = 0; i < n; ++i) {
+    StringObj* one = h.new_string(s.data() + i, 1);  // safepoint
+    if (!one || h.over_cap()) { err = "out of memory"; return false; }
+    hs.get<ArrayObj>(ri)->slots->data[i] = Value::object(one);  // re-read result
+  }
+  out = Value::object(hs.get<ArrayObj>(ri));
+  return true;
+}
+
+// to_bytes: array of int byte values (single allocation; source copied first).
+bool to_bytes_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_str(a[0])) { err = "to_bytes expects a string"; return false; }
+  std::string s(sbytes(a[0]), slen(a[0]));  // copy first -> no source pointer held
+  uint32_t n = static_cast<uint32_t>(s.size());
+  Value rv;
+  if (!make_array(h, n, rv, err)) return false;  // safepoint
+  ArrayObj* r = static_cast<ArrayObj*>(rv.as.obj);
+  for (uint32_t i = 0; i < n; ++i)
+    r->slots->data[i] = Value::integer(static_cast<uint8_t>(s[i]));
+  out = rv;
+  return true;
+}
+
+// format: replace each "{}" in the template with the rendered next argument.
+// Variadic; renders args (read-only) into a C++ string, then allocates once.
+bool format_fn(Value* a, uint32_t argc, Heap& h, Value& out, std::string& err) {
+  if (!is_str(a[0])) { err = "format expects a string template"; return false; }
+  std::string fmt(sbytes(a[0]), slen(a[0]));
+  std::string r;
+  uint32_t argi = 1;
+  for (size_t i = 0; i < fmt.size(); ++i) {
+    if (i + 1 < fmt.size() && fmt[i] == '{' && fmt[i + 1] == '}') {
+      if (argi < argc) r += render(a[argi++]);
+      else r += "{}";  // not enough arguments: leave the placeholder
+      ++i;             // consume the '}'
+    } else {
+      r += fmt[i];
+    }
+  }
+  return make_string(h, r.data(), static_cast<uint32_t>(r.size()), out, err);
+}
+
+// --- map transforms (allocate) ---
+
+// invert: new map mapping each value (which must be a string) back to its key.
+// Multi-alloc via map_put; keys are copied into C++ locals before each insert.
+bool invert_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_map(a[0])) { err = "invert expects a map"; return false; }
+  Value rv;
+  if (!make_map(h, rv, err)) return false;  // safepoint
+  HandleScope hs(h);
+  size_t mi = hs.root(rv.as.obj);
+  uint32_t len = as_map(a[0])->len;
+  for (uint32_t i = 0; i < len; ++i) {
+    MapObj* sm = as_map(a[0]);  // re-read source
+    const Value& v = sm->vals->data[i];
+    if (!is_str(v)) { err = "invert requires string values"; return false; }
+    std::string newkey(sbytes(v), slen(v));
+    Value newval = sm->keys->data[i];  // the old key (a StringObj) becomes the value
+    MapObj* nm = hs.get<MapObj>(mi);
+    map_put(nm, newkey.data(), static_cast<uint32_t>(newkey.size()), newval, h);  // allocates
+    if (h.over_cap()) { err = "out of memory"; return false; }
+  }
+  out = Value::object(hs.get<MapObj>(mi));
+  return true;
+}
+
+// pick: new map containing only the keys listed in the key array that the source
+// map actually has. Keys are copied to C++ locals before each (allocating) put.
+bool pick_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_map(a[0])) { err = "pick expects a map"; return false; }
+  if (!is_array(a[1])) { err = "pick expects a key array"; return false; }
+  Value rv;
+  if (!make_map(h, rv, err)) return false;  // safepoint
+  HandleScope hs(h);
+  size_t mi = hs.root(rv.as.obj);
+  uint32_t klen = as_arr(a[1])->len;
+  for (uint32_t i = 0; i < klen; ++i) {
+    const Value& kv = as_arr(a[1])->slots->data[i];
+    if (!is_str(kv)) { err = "pick keys must be strings"; return false; }
+    std::string key(sbytes(kv), slen(kv));
+    MapObj* sm = as_map(a[0]);
+    int j = map_index(sm, key.data(), static_cast<uint32_t>(key.size()));
+    if (j < 0) continue;
+    Value val = sm->vals->data[j];
+    MapObj* nm = hs.get<MapObj>(mi);
+    map_put(nm, key.data(), static_cast<uint32_t>(key.size()), val, h);  // allocates
+    if (h.over_cap()) { err = "out of memory"; return false; }
+  }
+  out = Value::object(hs.get<MapObj>(mi));
+  return true;
+}
+
+// =======================================================================
 // Registry
 // =======================================================================
 
@@ -1104,6 +1702,31 @@ const NativeEntry kNatives[] = {
     // map
     {"get", 2, 2, get_fn},             {"set", 3, 3, set_fn},
     {"merge", 2, 2, merge_fn},         {"entries", 1, 1, entries_fn},
+
+    // --- batch 3 ---
+    // math
+    {"factorial", 1, 1, factorial_fn}, {"is_prime", 1, 1, is_prime_fn},
+    {"fib", 1, 1, fib_fn},             {"cbrt", 1, 1, cbrt_fn},
+    {"deg2rad", 1, 1, deg2rad_fn},     {"rad2deg", 1, 1, rad2deg_fn},
+    {"log_base", 2, 2, log_base_fn},   {"mean", 1, 1, mean_fn},
+    // array reductions / predicates
+    {"any", 1, 1, any_fn},             {"all", 1, 1, all_fn},
+    {"includes", 2, 2, includes_fn},   {"index_min", 1, 1, index_min_fn},
+    {"index_max", 1, 1, index_max_fn},
+    // array transforms
+    {"zip", 2, 2, zip_fn},             {"enumerate", 1, 1, enumerate_fn},
+    {"flatten", 1, 1, flatten_fn},     {"unique", 1, 1, unique_fn},
+    {"rotate", 2, 2, rotate_fn},       {"chunk", 2, 2, chunk_fn},
+    // string predicates
+    {"is_digit", 1, 1, is_digit_str_fn}, {"is_alpha", 1, 1, is_alpha_fn},
+    {"is_alnum", 1, 1, is_alnum_fn},   {"is_space", 1, 1, is_space_fn},
+    // string transforms
+    {"swapcase", 1, 1, swapcase_fn},   {"title_case", 1, 1, title_case_fn},
+    {"zfill", 2, 2, zfill_fn},         {"center", 3, 3, center_fn},
+    {"chars", 1, 1, chars_fn},         {"to_bytes", 1, 1, to_bytes_fn},
+    {"format", 1, 255, format_fn},
+    // map transforms
+    {"invert", 1, 1, invert_fn},       {"pick", 2, 2, pick_fn},
 };
 
 constexpr size_t kNativeCount = sizeof(kNatives) / sizeof(kNatives[0]);

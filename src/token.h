@@ -13,6 +13,7 @@ enum class Tok : uint8_t {
   EqEq, BangEq, Lt, Le, Gt, Ge, AmpAmp, PipePipe, Bang,
   Percent, Amp, Pipe, Caret, Tilde, Shl, Shr,
   KwFn, KwReturn, KwIf, KwElse, KwWhile, KwNil, KwTrue, KwFalse, KwPrint,
+  KwFor, KwBreak, KwContinue, KwElif,
   Error
 };
 

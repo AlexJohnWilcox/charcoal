@@ -97,4 +97,22 @@ void test_interp() {
   { auto r = SRC("print 10 % 0;");           CHECK(!r.ok); }
   { auto r = SRC("print 1 << 99;");          CHECK(!r.ok); }
   { auto r = SRC("print 5 < \"x\";");        CHECK(!r.ok); }  // comparison on non-number
+
+  // --- A3 control flow ---
+  { auto r = SRC("s = 0; for (i = 0; i < 5; i = i + 1) { s = s + i; } print s;");
+    CHECK(r.ok); CHECK(r.output == "10"); }
+  { auto r = SRC("s = 0; for (i = 0; i < 10; i = i + 1) { if (i == 5) { break; } s = s + 1; } print s;");
+    CHECK(r.ok); CHECK(r.output == "5"); }
+  { auto r = SRC("s = 0; for (i = 0; i < 5; i = i + 1) { if (i == 2) { continue; } s = s + i; } print s;");
+    CHECK(r.ok); CHECK(r.output == "8"); }   // 0+1+3+4
+  { auto r = SRC("i = 0; s = 0; while (i < 5) { i = i + 1; if (i == 3) { continue; } s = s + i; } print s;");
+    CHECK(r.ok); CHECK(r.output == "12"); }   // 1+2+4+5
+  { auto r = SRC("x = 7; if (x < 0) { print 1; } elif (x == 7) { print 2; } else { print 3; }");
+    CHECK(r.ok); CHECK(r.output == "2"); }
+  { auto r = SRC("x = 9; if (x < 0) { print 1; } elif (x == 7) { print 2; } else { print 3; }");
+    CHECK(r.ok); CHECK(r.output == "3"); }
+  { auto r = SRC("n = 0; for (i = 0; i < 3; i = i + 1) { for (j = 0; j < 3; j = j + 1) { if (j == 1) { break; } n = n + 1; } } print n;");
+    CHECK(r.ok); CHECK(r.output == "3"); }    // inner loop breaks after j==0 each time
+  { auto r = SRC("break;"); CHECK(!r.ok); }   // break outside loop -> compile error
+  { auto r = SRC("continue;"); CHECK(!r.ok); }
 }

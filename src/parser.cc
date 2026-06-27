@@ -322,8 +322,10 @@ struct Parser {
     return n;
   }
 
-  Node* if_stmt() {
-    advance();  // if
+  // Current token is `if` or `elif`. Parses `(cond) block` then chains: an `elif`
+  // becomes a nested If in the else slot; an `else` becomes a Block there.
+  Node* parse_if_after_keyword() {
+    advance();  // consume 'if' / 'elif'
     if (!expect(Tok::LParen, "expected '(' after if")) return nullptr;
     Node* cond = assignment();
     if (!cond || failed()) return nullptr;
@@ -332,11 +334,58 @@ struct Parser {
     if (!thenB || failed()) return nullptr;
     Node* n = make(NodeKind::If);
     n->kids = {cond, thenB};
-    if (match(Tok::KwElse)) {
+    if (check(Tok::KwElif)) {
+      Node* elseIf = parse_if_after_keyword();  // nested If in the else slot
+      if (!elseIf || failed()) return nullptr;
+      n->kids.push_back(elseIf);
+    } else if (match(Tok::KwElse)) {
       Node* elseB = block();
       if (!elseB || failed()) return nullptr;
       n->kids.push_back(elseB);
     }
+    return n;
+  }
+
+  Node* if_stmt() { return parse_if_after_keyword(); }
+
+  // A for init/step clause: an Assign stays a statement; a bare expression is
+  // wrapped in ExprStmt so the compiler runs it for effect.
+  Node* for_clause() {
+    Node* e = assignment();
+    if (!e || failed()) return nullptr;
+    if (e->kind == NodeKind::Assign) return e;
+    Node* s = make(NodeKind::ExprStmt);
+    s->kids = {e};
+    return s;
+  }
+
+  Node* for_stmt() {
+    advance();  // for
+    if (!expect(Tok::LParen, "expected '(' after for")) return nullptr;
+
+    // init: optional clause, then ';'  (empty Block = omitted)
+    Node* init;
+    if (check(Tok::Semicolon)) init = make(NodeKind::Block);
+    else { init = for_clause(); if (!init || failed()) return nullptr; }
+    if (!expect(Tok::Semicolon, "expected ';' after for-init")) return nullptr;
+
+    // cond: optional expression, then ';'
+    Node* cond;
+    if (check(Tok::Semicolon)) cond = make(NodeKind::Block);
+    else { cond = assignment(); if (!cond || failed()) return nullptr; }
+    if (!expect(Tok::Semicolon, "expected ';' after for-condition")) return nullptr;
+
+    // step: optional clause, then ')'
+    Node* step;
+    if (check(Tok::RParen)) step = make(NodeKind::Block);
+    else { step = for_clause(); if (!step || failed()) return nullptr; }
+    if (!expect(Tok::RParen, "expected ')' after for-clauses")) return nullptr;
+
+    Node* body = block();
+    if (!body || failed()) return nullptr;
+
+    Node* n = make(NodeKind::For);
+    n->kids = {init, cond, step, body};  // always 4 kids
     return n;
   }
 
@@ -404,8 +453,19 @@ struct Parser {
       }
       case Tok::KwIf:    return if_stmt();
       case Tok::KwWhile: return while_stmt();
+      case Tok::KwFor:   return for_stmt();
       case Tok::KwFn:    return fn_decl();
       case Tok::LBrace:  return block();
+      case Tok::KwBreak: {
+        advance();
+        if (!expect(Tok::Semicolon, "expected ';'")) return nullptr;
+        return make(NodeKind::Break);
+      }
+      case Tok::KwContinue: {
+        advance();
+        if (!expect(Tok::Semicolon, "expected ';'")) return nullptr;
+        return make(NodeKind::Continue);
+      }
       default: {
         Node* e = assignment();
         if (!e || failed()) return nullptr;

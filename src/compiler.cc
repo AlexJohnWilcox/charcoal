@@ -28,6 +28,14 @@ struct Compiler {
   int reg_top = 0;     // first free register
   int high_water = 0;  // max registers ever used -> num_regs
 
+  // Loop context for break/continue: stacks of JUMP operand positions to
+  // backpatch to the loop exit / continue target. One entry per enclosing loop.
+  struct LoopCtx {
+    std::vector<int> continue_patches;
+    std::vector<int> break_patches;
+  };
+  std::vector<LoopCtx> loops;
+
   void fail(const std::string& msg) {
     if (error.empty()) error = msg;
   }
@@ -383,6 +391,7 @@ struct Compiler {
       }
       case NodeKind::While: {
         int loop_start = static_cast<int>(code->size());
+        loops.push_back({});
         int save = reg_top, t = reg_top;
         reg_top += 1; use(reg_top);
         compile_expr(n->kids[0], t);
@@ -390,10 +399,57 @@ struct Compiler {
         int exitJump = emit_offset();
         reg_top = save;
         compile_stmt(n->kids[1]);
+        // continue re-tests the condition.
+        for (int p : loops.back().continue_patches) patch_to(p, loop_start);
         emit(OP_JUMP);
         int backJump = emit_offset();
         patch_to(backJump, loop_start);
-        patch_jump(exitJump);
+        int exit = static_cast<int>(code->size());
+        patch_to(exitJump, exit);
+        for (int p : loops.back().break_patches) patch_to(p, exit);
+        loops.pop_back();
+        break;
+      }
+      case NodeKind::For: {
+        const Node* cond = n->kids[1];
+        const Node* step = n->kids[2];
+        compile_stmt(n->kids[0]);  // init (empty Block sentinel -> no-op)
+        int loop_start = static_cast<int>(code->size());
+        loops.push_back({});
+        bool has_cond = !(cond->kind == NodeKind::Block && cond->kids.empty());
+        int exitJump = -1;
+        if (has_cond) {
+          int save = reg_top, t = reg_top;
+          reg_top += 1; use(reg_top);
+          compile_expr(cond, t);
+          emit(OP_JUMP_IF_FALSE); emit_r(t);
+          exitJump = emit_offset();
+          reg_top = save;
+        }
+        compile_stmt(n->kids[3]);  // body
+        // continue jumps to the step (then the back-edge re-tests cond).
+        int cont_target = static_cast<int>(code->size());
+        for (int p : loops.back().continue_patches) patch_to(p, cont_target);
+        compile_stmt(step);  // empty Block sentinel -> no-op
+        emit(OP_JUMP);
+        int backJump = emit_offset();
+        patch_to(backJump, loop_start);
+        int exit = static_cast<int>(code->size());
+        if (exitJump != -1) patch_to(exitJump, exit);
+        for (int p : loops.back().break_patches) patch_to(p, exit);
+        loops.pop_back();
+        break;
+      }
+      case NodeKind::Break: {
+        if (loops.empty()) { fail("break outside loop"); return; }
+        emit(OP_JUMP);
+        loops.back().break_patches.push_back(emit_offset());
+        break;
+      }
+      case NodeKind::Continue: {
+        if (loops.empty()) { fail("continue outside loop"); return; }
+        emit(OP_JUMP);
+        loops.back().continue_patches.push_back(emit_offset());
         break;
       }
       default:
@@ -421,6 +477,7 @@ struct Compiler {
                     const std::vector<std::string>& params, bool is_main) {
     code = &f.code;
     locals.clear();
+    loops.clear();
     reg_top = 0;
     high_water = 0;
 

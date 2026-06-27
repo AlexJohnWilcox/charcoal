@@ -103,4 +103,51 @@ void test_parser() {
     CHECK(u->kind == NodeKind::Unary && u->op == '!');
     CHECK(u->kids[0]->kind == NodeKind::Unary && u->kids[0]->op == '!');
   }
+
+  // --- A3: control flow shapes ---
+
+  // for(...) -> a For node with exactly 4 kids [init, cond, step, body].
+  {
+    auto l = lex("for (i = 0; i < 5; i = i + 1) { print i; }", 42);
+    auto r = parse(l.tokens);
+    CHECK(r.error.empty());
+    Node* f = r.program->kids[0];
+    CHECK(f->kind == NodeKind::For);
+    CHECK(f->kids.size() == 4);
+    CHECK(f->kids[0]->kind == NodeKind::Assign);   // init
+    CHECK(f->kids[3]->kind == NodeKind::Block);     // body
+  }
+
+  // Omitted clauses become empty-Block sentinels (still 4 kids).
+  {
+    auto l = lex("for (;;) { break; }", 19);
+    auto r = parse(l.tokens);
+    CHECK(r.error.empty());
+    Node* f = r.program->kids[0];
+    CHECK(f->kind == NodeKind::For && f->kids.size() == 4);
+    CHECK(f->kids[1]->kind == NodeKind::Block && f->kids[1]->kids.empty());  // cond omitted
+  }
+
+  // elif -> the If's else slot holds a nested If.
+  {
+    auto l = lex("if (a) { print 1; } elif (b) { print 2; } else { print 3; }", 59);
+    auto r = parse(l.tokens);
+    CHECK(r.error.empty());
+    Node* iff = r.program->kids[0];
+    CHECK(iff->kind == NodeKind::If && iff->kids.size() == 3);
+    Node* elseSlot = iff->kids[2];
+    CHECK(elseSlot->kind == NodeKind::If);          // the elif
+    CHECK(elseSlot->kids.size() == 3);              // elif has its own else
+    CHECK(elseSlot->kids[2]->kind == NodeKind::Block);
+  }
+
+  // break / continue parse to their own statement nodes.
+  {
+    auto l = lex("while (1) { break; continue; }", 30);
+    auto r = parse(l.tokens);
+    CHECK(r.error.empty());
+    Node* body = r.program->kids[0]->kids[1];
+    CHECK(body->kids[0]->kind == NodeKind::Break);
+    CHECK(body->kids[1]->kind == NodeKind::Continue);
+  }
 }

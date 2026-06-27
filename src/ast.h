@@ -11,7 +11,7 @@ enum class NodeKind {
   IntLit, FloatLit, StrLit, BoolLit, NilLit, Ident,
   Binary, Unary, Logical, Assign, Index, Field, Call, ArrayLit, MapLit,
   // statements
-  ExprStmt, Print, Return, If, While, Block, FnDecl, Program
+  ExprStmt, Print, Return, If, While, For, Break, Continue, Block, FnDecl, Program
 };
 
 struct Node {
@@ -43,6 +43,10 @@ struct Node {
 //   Return   : [expr]   (empty kids => return nil)
 //   If       : [cond, thenBlock]  or  [cond, thenBlock, elseBlock]
 //   While    : [cond, body]
+//   For      : [init, cond, step, body]  always 4 kids; omitted init/cond/step
+//             is an empty Block ([]) sentinel (compiler skips empty Block clauses)
+//   Break    : []      (compile error outside a loop)
+//   Continue : []
 //   Block    : [stmt0, stmt1, ...]
 //   FnDecl   : [body]   name in str, params in `params`
 //   Program  : [stmt-or-fndecl, ...]

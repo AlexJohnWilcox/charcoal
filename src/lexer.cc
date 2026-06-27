@@ -24,6 +24,10 @@ Tok keyword(const char* s, size_t len) {
   if (w == "true")   return Tok::KwTrue;
   if (w == "false")  return Tok::KwFalse;
   if (w == "print")  return Tok::KwPrint;
+  if (w == "for")    return Tok::KwFor;
+  if (w == "break")  return Tok::KwBreak;
+  if (w == "continue") return Tok::KwContinue;
+  if (w == "elif")   return Tok::KwElif;
   return Tok::Ident;
 }
 
