@@ -318,7 +318,10 @@ struct Printer {
   void stmt(const Node* n, int d) {
     if (!n) return;
     switch (n->kind) {
-      case NodeKind::ExprStmt: expr(n->kids[0], d); out += ';'; break;
+      case NodeKind::ExprStmt:
+        expr(n->kids[0], d);
+        if (!ends_in_block(n->kids[0])) out += ';';  // a lambda body self-terminates
+        break;
       case NodeKind::Print:    out += "print "; expr(n->kids[0], d); out += ';'; break;
       case NodeKind::Return:
         out += "return";
