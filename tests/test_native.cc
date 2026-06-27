@@ -177,4 +177,78 @@ void test_native() {
     CHECK(r.ok);
     CHECK(r.output == "500");
   }
+
+  // --- A2b: stdlib batch 2 ---
+  // convert / predicates
+  OUT("print to_string(42);", "42");
+  OUT("print to_int(\"42\") + 1;", "43");
+  OUT("print is_nil(nil);", "true");
+  OUT("print is_array([1]);", "true");
+  OUT("print is_map({\"a\" = 1});", "true");
+  OUT("print is_int(3);", "true");
+  OUT("print is_bool(1 < 2);", "true");
+  { auto r = SRC("print to_int(\"nope\");"); CHECK(!r.ok); }  // bad parse -> error
+
+  // math
+  OUT("print clamp(15, 0, 10);", "10");
+  OUT("print clamp(-3, 0, 10);", "0");
+  OUT("print gcd(12, 18);", "6");
+  OUT("print lcm(4, 6);", "12");
+  OUT("print trunc(3.9);", "3");
+  { auto r = SRC("print log(0);"); CHECK(!r.ok); }            // domain error
+  { auto r = SRC("print clamp(1, 10, 0);"); CHECK(!r.ok); }   // lo > hi
+
+  // string
+  OUT("print replace(\"a.b.c\", \".\", \"-\");", "a-b-c");
+  OUT("print last_index_of(\"abcabc\", \"bc\");", "4");
+  OUT("print pad_left(\"7\", 3, \"0\");", "007");
+  OUT("print pad_right(\"7\", 3, \".\");", "7..");
+  OUT("print count_sub(\"aaaa\", \"aa\");", "2");             // non-overlapping
+  OUT("print capitalize(\"hELLO\");", "Hello");
+  OUT("print reverse_str(\"abc\");", "cba");
+  OUT("print len(lines(\"a\nb\nc\"));", "3");
+  OUT("print is_empty(\"\");", "true");
+  { auto r = SRC("print replace(\"x\", \"\", \"y\");"); CHECK(!r.ok); }  // empty from
+
+  // array
+  OUT("print len(range(0, 5));", "5");
+  OUT("a = range(0, 5); print a[0] + a[4];", "4");
+  OUT("a = range(10, 0, 0 - 2); print a[0] + a[1];", "18");   // 10 + 8
+  OUT("a = fill(3, 7); print a[0] + a[1] + a[2];", "21");
+  OUT("a = concat_arr([1, 2], [3, 4]); print a[0] + a[3];", "5");  // 1 + 4
+  OUT("print sum([1, 2, 3, 4]);", "10");
+  OUT("print product([1, 2, 3, 4]);", "24");
+  OUT("print min_of([5, 2, 8]);", "2");
+  OUT("print max_of([5, 2, 8]);", "8");
+  OUT("print first([9, 8, 7]);", "9");
+  OUT("print last([9, 8, 7]);", "7");
+  OUT("a = take([1, 2, 3, 4], 2); print len(a) + a[1];", "4");    // 2 + 2
+  OUT("a = drop([1, 2, 3, 4], 1); print len(a) + a[0];", "5");    // 3 + 2
+  OUT("print count_of([1, 2, 1, 1], 1);", "3");
+  { auto r = SRC("print first([]);"); CHECK(!r.ok); }            // empty
+  { auto r = SRC("print sum([1, \"x\"]);"); CHECK(!r.ok); }      // non-number
+
+  // map (dynamic keys via set/get)
+  OUT("m = {}; set(m, \"x\", 5); print get(m, \"x\");", "5");
+  OUT("m = {}; set(m, \"x\", 1); print get(m, \"y\");", "nil");
+  OUT("a = {\"x\" = 1}; b = {\"y\" = 2}; m = merge(a, b); print get(m, \"x\") + get(m, \"y\");", "3");
+  OUT("m = {\"a\" = 1, \"b\" = 2}; e = entries(m); print len(e) + len(e[0]);", "4");  // 2 entries, pair len 2
+
+  // set under heap pressure: dynamic map growth survives collections
+  {
+    const char* src =
+        "m = {};"
+        "set(m, \"keep\", 123);"
+        "i = 200;"
+        "while (i) { junk = [0, 0, 0, 0, 0]; i = i - 1; }"
+        "print get(m, \"keep\");";
+    auto l = lex(src, std::strlen(src));
+    auto p = parse(l.tokens);
+    auto c = compile(p.program);
+    CHECK(c.ok);
+    Heap h(32 * 1024);
+    auto r = run(c.module, h, Limits{});
+    CHECK(r.ok);
+    CHECK(r.output == "123");
+  }
 }
