@@ -353,4 +353,114 @@ void test_native() {
     CHECK(r.ok);
     CHECK(r.output == "e");
   }
+
+  // ===================== batch 4 =====================
+
+  // math: inverse trig / hyperbolic (compare rounded to avoid float equality)
+  OUT("print round(acos(0.0) * 1000);", "1571");   // pi/2
+  OUT("print round(atan(1.0) * 1000);", "785");    // pi/4
+  OUT("print round(sinh(0.0));", "0");
+  OUT("print round(cosh(0.0));", "1");
+  OUT("print round(tanh(0.0));", "0");
+  ERRS("print asin(2.0);");      // domain
+  ERRS("print acosh(0.5);");     // domain (x < 1)
+  ERRS("print atanh(1.0);");     // domain (|x| >= 1)
+
+  // math: misc
+  OUT("print fmod(7.0, 3.0) == 1.0;", "true");
+  ERRS("print fmod(1.0, 0.0);");
+  OUT("print copysign(3.0, 0 - 1.0) == 0 - 3.0;", "true");
+  OUT("print ldexp(1.0, 4) == 16.0;", "true");
+  OUT("print is_nan(0.0);", "false");
+  OUT("print is_inf(1.0);", "false");
+  OUT("print is_finite(3);", "true");
+  OUT("print round(lerp(0.0, 10.0, 0.5));", "5");
+  OUT("print smoothstep(0.0, 1.0, 0.5) == 0.5;", "true");
+  OUT("print isqrt(17);", "4");
+  OUT("print isqrt(16);", "4");
+  ERRS("print isqrt(0 - 1);");
+  OUT("print mod_floor(0 - 7, 3);", "2");
+  OUT("print mod_floor(7, 0 - 3);", "-2");
+  ERRS("print mod_floor(5, 0);");
+  OUT("print bit_count(7);", "3");
+  OUT("print bit_count(0);", "0");
+  OUT("print next_pow2(17);", "32");
+  OUT("print next_pow2(16);", "16");
+  OUT("a = divmod(17, 5); print a[0];", "3");
+  OUT("a = divmod(17, 5); print a[1];", "2");
+  ERRS("print divmod(1, 0);");
+
+  // string predicates / transforms
+  OUT("print is_upper(\"ABC\");", "true");
+  OUT("print is_upper(\"AbC\");", "false");
+  OUT("print is_upper(\"123\");", "false");   // no letters
+  OUT("print is_lower(\"abc\");", "true");
+  OUT("print strip_prefix(\"foobar\", \"foo\");", "bar");
+  OUT("print strip_prefix(\"foobar\", \"xyz\");", "foobar");
+  OUT("print strip_suffix(\"foobar\", \"bar\");", "foo");
+  OUT("print left(\"hello\", 3);", "hel");
+  OUT("print right(\"hello\", 3);", "llo");
+  OUT("print left(\"hi\", 99);", "hi");        // clamp
+  OUT("print count_char(\"banana\", \"a\");", "3");
+  OUT("a = find_all(\"abcabc\", \"bc\"); print len(a);", "2");
+  OUT("a = find_all(\"abcabc\", \"bc\"); print a[0] + a[1];", "5");  // 1 + 4
+  OUT("print replace_first(\"a.b.c\", \".\", \"-\");", "a-b.c");
+  OUT("print rot13(\"abc\");", "nop");
+  OUT("print rot13(rot13(\"Hello\"));", "Hello");  // involution
+  ERRS("print find_all(\"x\", \"\");");        // empty pattern
+
+  // array transforms / reductions
+  OUT("a = compact([1, nil, 2, nil, 3]); print len(a);", "3");
+  OUT("a = compact([1, nil, 2]); print a[1];", "2");
+  OUT("a = cumsum([1, 2, 3, 4]); print a[3];", "10");
+  OUT("a = cumsum([1, 2, 3]); print a[0] + a[1] + a[2];", "10");   // 1 + 3 + 6
+  OUT("print dot([1, 2, 3], [4, 5, 6]);", "32");
+  ERRS("print dot([1, 2], [1, 2, 3]);");       // unequal length
+  OUT("a = intersperse([1, 2, 3], 0); print len(a);", "5");
+  OUT("a = intersperse([1, 2, 3], 0); print a[1];", "0");
+  OUT("a = reverse_copy([1, 2, 3]); print a[0];", "3");
+  OUT("a = [3, 1, 2]; s = sorted(a); print s[0];", "1");
+  OUT("a = [3, 1, 2]; sorted(a); print a[0];", "3");   // source unchanged
+  OUT("print is_sorted([1, 2, 3]);", "true");
+  OUT("print is_sorted([1, 3, 2]);", "false");
+  OUT("a = tail([1, 2, 3]); print a[0];", "2");
+  OUT("a = tail([1, 2, 3]); print len(a);", "2");
+  OUT("a = init([1, 2, 3]); print a[1];", "2");
+  OUT("a = init([1, 2, 3]); print len(a);", "2");
+  ERRS("print tail([]);");
+
+  // map utilities
+  OUT("m = {\"a\"=1}; print get_or(m, \"a\", 99);", "1");
+  OUT("m = {\"a\"=1}; print get_or(m, \"z\", 99);", "99");
+  OUT("m = {\"a\"=1, \"b\"=2}; print has_value(m, 2);", "true");
+  OUT("m = {\"a\"=1}; print has_value(m, 9);", "false");
+  OUT("m = {\"a\"=1, \"b\"=2, \"c\"=3}; o = omit(m, [\"b\"]); print len(o);", "2");
+  OUT("m = {\"a\"=1, \"b\"=2}; o = omit(m, [\"b\"]); print has(o, \"a\");", "true");
+  OUT("m = {\"a\"=1, \"b\"=2}; o = omit(m, [\"b\"]); print has(o, \"b\");", "false");
+
+  // conversion / predicate
+  OUT("print hex(255);", "0xff");
+  OUT("print hex(0);", "0x0");
+  OUT("print hex(0 - 255);", "-0xff");
+  OUT("print bin(5);", "0b101");
+  OUT("print is_function(3);", "false");
+  OUT("fn f(x) { return x; } print is_function(f);", "true");
+
+  // GC pressure on a batch-4 multi-alloc builtin (omit grows a fresh map).
+  {
+    const char* src =
+        "m = {\"a\"=1, \"b\"=2, \"c\"=3, \"d\"=4, \"e\"=5};"
+        "o = omit(m, [\"c\"]);"
+        "i = 200;"
+        "while (i) { junk = [0, 0, 0, 0]; i = i - 1; }"
+        "print get(o, \"e\");";   // surviving entry after collections
+    auto l = lex(src, std::strlen(src));
+    auto p = parse(l.tokens);
+    auto c = compile(p.program);
+    CHECK(c.ok);
+    Heap h(48 * 1024);
+    auto r = run(c.module, h, Limits{});
+    CHECK(r.ok);
+    CHECK(r.output == "5");
+  }
 }
