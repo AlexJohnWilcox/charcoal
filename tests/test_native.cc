@@ -653,4 +653,74 @@ void test_native() {
     CHECK(r.ok);
     CHECK(r.output == "58");
   }
+
+  // ===================== batch 7 =====================
+
+  // math
+  OUT("print square(5);", "25");
+  OUT("print square(2.0) == 4.0;", "true");
+  OUT("print cube(3);", "27");
+  OUT("print sigmoid(0.0) == 0.5;", "true");
+  OUT("print relu(0 - 3);", "0");
+  OUT("print relu(5);", "5");
+  OUT("print relu(0 - 2.0) == 0.0;", "true");
+  OUT("print round(log_factorial(0));", "0");
+  ERRS("print log_factorial(0 - 1);");
+  OUT("print midpoint(0.0, 10.0) == 5.0;", "true");
+  OUT("print fract(3.25) == 0.25;", "true");
+  OUT("print fract(0 - 0.25) == 0.75;", "true");
+  OUT("print sec(0.0) == 1.0;", "true");
+  OUT("print is_num(cot(1.0));", "true");
+  OUT("print is_num(csc(1.0));", "true");
+  OUT("print round(logaddexp(0.0, 0.0) * 1000);", "693");  // ln(2) * 1000
+  OUT("print gcd3(12, 18, 24);", "6");
+  OUT("print lcm3(2, 3, 4);", "12");
+
+  // string
+  OUT("print surround(\"x\", \"*\");", "*x*");
+  OUT("print initials(\"john ronald reuel\");", "jrr");
+  OUT("print shorten(\"hello world\", 5);", "hello...");
+  OUT("print shorten(\"hi\", 5);", "hi");
+  OUT("print ordinal(1);", "1st");
+  OUT("print ordinal(2);", "2nd");
+  OUT("print ordinal(3);", "3rd");
+  OUT("print ordinal(11);", "11th");
+  OUT("print ordinal(21);", "21st");
+
+  // array
+  OUT("a = flatten_deep([1, [2, [3, [4]]]]); print len(a);", "4");
+  OUT("a = flatten_deep([1, [2, [3, [4]]]]); print a[3];", "4");
+  OUT("a = interleave([1, 2, 3], [4, 5]); print a[1];", "4");
+  OUT("a = interleave([1, 2, 3], [4, 5]); print len(a);", "5");
+  OUT("a = prepend([2, 3], 1); print a[0];", "1");
+  OUT("a = append([1, 2], 3); print a[2];", "3");
+  OUT("print span([3, 1, 4, 1, 5]) == 4.0;", "true");
+  OUT("print sum_abs([1, 0 - 2, 3, 0 - 4]);", "10");
+  OUT("print gcd_all([12, 18, 24]);", "6");
+
+  // map
+  OUT("m = {\"a\"=1, \"b\"=2}; print has_all(m, [\"a\", \"b\"]);", "true");
+  OUT("m = {\"a\"=1, \"b\"=2}; print has_all(m, [\"a\", \"z\"]);", "false");
+  OUT("m = merge3({\"a\"=1}, {\"b\"=2}, {\"a\"=9, \"c\"=3}); print get(m, \"a\");", "9");  // last wins
+  OUT("m = merge3({\"a\"=1}, {\"b\"=2}, {\"c\"=3}); print len(m);", "3");
+
+  // GC pressure across batch-7 multi-alloc builtins (flatten_deep + merge3 + ...).
+  {
+    const char* src =
+        "fd = flatten_deep([1, [2, [3, 4]], 5]);"
+        "il = interleave([1, 2, 3], [10, 20, 30]);"
+        "ap = append([1, 2], 3);"
+        "m3 = merge3({\"a\"=1}, {\"b\"=2}, {\"c\"=3});"
+        "i = 200;"
+        "while (i) { junk = [0, 0, 0, 0, 0]; i = i - 1; }"
+        "print fd[4] + il[5] + ap[2] + get(m3, \"c\");";  // 5 + 30 + 3 + 3 = 41
+    auto l = lex(src, std::strlen(src));
+    auto p = parse(l.tokens);
+    auto c = compile(p.program);
+    CHECK(c.ok);
+    Heap h(48 * 1024);
+    auto r = run(c.module, h, Limits{});
+    CHECK(r.ok);
+    CHECK(r.output == "41");
+  }
 }

@@ -3211,6 +3211,320 @@ bool zip_map_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
 }
 
 // =======================================================================
+// Batch 7 — more special functions, text helpers, and structural ops
+// =======================================================================
+
+int64_t wmul2(int64_t x, int64_t y) { return static_cast<int64_t>(static_cast<uint64_t>(x) * static_cast<uint64_t>(y)); }
+
+// Least common multiple in unsigned, failing (ok=false) on overflow or a result
+// that would not fit a signed 64-bit integer.
+uint64_t lcm_u(uint64_t x, uint64_t y, bool& ok) {
+  if (x == 0 || y == 0) return 0;
+  uint64_t aa = x / gcd_u(x, y);
+  if (aa > UINT64_MAX / y) { ok = false; return 0; }
+  uint64_t r = aa * y;
+  if (r > static_cast<uint64_t>(kI64Max)) { ok = false; return 0; }
+  return r;
+}
+
+// --- math ---
+
+bool square_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0])) { err = "square expects a number"; return false; }
+  if (a[0].tag == Tag::Int) { int64_t x = a[0].as.i; out = Value::integer(wmul2(x, x)); }
+  else { double x = a[0].as.d; out = Value::number(x * x); }
+  return true;
+}
+bool cube_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0])) { err = "cube expects a number"; return false; }
+  if (a[0].tag == Tag::Int) { int64_t x = a[0].as.i; out = Value::integer(wmul2(wmul2(x, x), x)); }
+  else { double x = a[0].as.d; out = Value::number(x * x * x); }
+  return true;
+}
+bool sigmoid_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0])) { err = "sigmoid expects a number"; return false; }
+  out = Value::number(1.0 / (1.0 + std::exp(-to_double(a[0]))));
+  return true;
+}
+bool relu_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0])) { err = "relu expects a number"; return false; }
+  if (to_double(a[0]) > 0) out = a[0];
+  else out = (a[0].tag == Tag::Int) ? Value::integer(0) : Value::number(0.0);
+  return true;
+}
+bool log_factorial_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (a[0].tag != Tag::Int) { err = "log_factorial expects an integer"; return false; }
+  if (a[0].as.i < 0) { err = "log_factorial of a negative number"; return false; }
+  out = Value::number(std::lgamma(static_cast<double>(a[0].as.i) + 1.0));
+  return true;
+}
+bool midpoint_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0]) || !is_num(a[1])) { err = "midpoint expects numbers"; return false; }
+  double x = to_double(a[0]), y = to_double(a[1]);
+  out = Value::number(x + (y - x) * 0.5);
+  return true;
+}
+bool fract_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0])) { err = "fract expects a number"; return false; }
+  double x = to_double(a[0]);
+  out = Value::number(x - std::floor(x));
+  return true;
+}
+bool cot_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0])) { err = "cot expects a number"; return false; }
+  out = Value::number(1.0 / std::tan(to_double(a[0])));
+  return true;
+}
+bool sec_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0])) { err = "sec expects a number"; return false; }
+  out = Value::number(1.0 / std::cos(to_double(a[0])));
+  return true;
+}
+bool csc_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0])) { err = "csc expects a number"; return false; }
+  out = Value::number(1.0 / std::sin(to_double(a[0])));
+  return true;
+}
+// Numerically stable log(exp(x) + exp(y)).
+bool logaddexp_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0]) || !is_num(a[1])) { err = "logaddexp expects numbers"; return false; }
+  double x = to_double(a[0]), y = to_double(a[1]);
+  double m = x > y ? x : y;
+  out = Value::number(m + std::log1p(std::exp(-std::fabs(x - y))));
+  return true;
+}
+bool gcd3_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (a[0].tag != Tag::Int || a[1].tag != Tag::Int || a[2].tag != Tag::Int) { err = "gcd3 expects integers"; return false; }
+  uint64_t g = gcd_u(gcd_u(u_abs(a[0].as.i), u_abs(a[1].as.i)), u_abs(a[2].as.i));
+  if (g > static_cast<uint64_t>(kI64Max)) { err = "gcd3 out of range"; return false; }
+  out = Value::integer(static_cast<int64_t>(g));
+  return true;
+}
+bool lcm3_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (a[0].tag != Tag::Int || a[1].tag != Tag::Int || a[2].tag != Tag::Int) { err = "lcm3 expects integers"; return false; }
+  bool ok = true;
+  uint64_t l = lcm_u(u_abs(a[0].as.i), u_abs(a[1].as.i), ok);
+  if (ok) l = lcm_u(l, u_abs(a[2].as.i), ok);
+  if (!ok) { err = "lcm3 overflow"; return false; }
+  out = Value::integer(static_cast<int64_t>(l));
+  return true;
+}
+
+// --- string ---
+
+bool surround_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_str(a[0]) || !is_str(a[1])) { err = "surround expects strings"; return false; }
+  std::string s(sbytes(a[0]), slen(a[0]));
+  std::string w(sbytes(a[1]), slen(a[1]));
+  std::string r = w + s + w;
+  return make_string(h, r.data(), static_cast<uint32_t>(r.size()), out, err);
+}
+// First byte of each whitespace-delimited word.
+bool initials_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_str(a[0])) { err = "initials expects a string"; return false; }
+  std::string s(sbytes(a[0]), slen(a[0]));
+  auto ws = [](char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'; };
+  std::string r;
+  bool start = true;
+  for (char c : s) {
+    if (ws(c)) { start = true; }
+    else { if (start) r += c; start = false; }
+  }
+  return make_string(h, r.data(), static_cast<uint32_t>(r.size()), out, err);
+}
+// Truncate to at most n bytes, appending "..." when shortened.
+bool shorten_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_str(a[0])) { err = "shorten expects a string"; return false; }
+  if (!is_num(a[1])) { err = "shorten length must be a number"; return false; }
+  std::string s(sbytes(a[0]), slen(a[0]));
+  int64_t n = as_i64(a[1]);
+  if (n < 0) n = 0;
+  std::string r = (static_cast<uint64_t>(n) >= s.size()) ? s : (s.substr(0, static_cast<size_t>(n)) + "...");
+  return make_string(h, r.data(), static_cast<uint32_t>(r.size()), out, err);
+}
+// English ordinal: 1 -> "1st", 12 -> "12th", 23 -> "23rd".
+bool ordinal_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (a[0].tag != Tag::Int) { err = "ordinal expects an integer"; return false; }
+  int64_t n = a[0].as.i;
+  int64_t m100 = ((n % 100) + 100) % 100;
+  int64_t m10 = ((n % 10) + 10) % 10;
+  const char* suf = "th";
+  if (!(m100 >= 11 && m100 <= 13)) {
+    if (m10 == 1) suf = "st";
+    else if (m10 == 2) suf = "nd";
+    else if (m10 == 3) suf = "rd";
+  }
+  std::string r = std::to_string(n) + suf;
+  return make_string(h, r.data(), static_cast<uint32_t>(r.size()), out, err);
+}
+
+// --- array ---
+
+// Recursively count leaf (non-array) elements, refusing structures deeper than
+// 64 levels — which also makes a cyclic array a clean error instead of a crash.
+bool count_leaves(ArrayObj* arr, int depth, uint32_t& count) {
+  if (depth > 64) return false;
+  for (uint32_t i = 0; i < arr->len; ++i) {
+    const Value& e = arr->slots->data[i];
+    if (is_array(e)) { if (!count_leaves(as_arr(e), depth + 1, count)) return false; }
+    else ++count;
+  }
+  return true;
+}
+void fill_leaves(ArrayObj* dst, uint32_t& w, ArrayObj* src) {
+  for (uint32_t i = 0; i < src->len; ++i) {
+    const Value& e = src->slots->data[i];
+    if (is_array(e)) fill_leaves(dst, w, as_arr(e));  // depth already bounded by count_leaves
+    else dst->slots->data[w++] = e;
+  }
+}
+bool flatten_deep_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "flatten_deep expects an array"; return false; }
+  uint32_t total = 0;
+  if (!count_leaves(as_arr(a[0]), 0, total)) { err = "flatten_deep: nesting too deep"; return false; }
+  Value rv;
+  if (!make_array(h, total, rv, err)) return false;  // safepoint
+  ArrayObj* r = static_cast<ArrayObj*>(rv.as.obj);
+  ArrayObj* src = as_arr(a[0]);  // re-read after the alloc; the fill walk allocates nothing
+  uint32_t w = 0;
+  fill_leaves(r, w, src);
+  out = rv;
+  return true;
+}
+
+bool interleave_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0]) || !is_array(a[1])) { err = "interleave expects two arrays"; return false; }
+  uint64_t la = as_arr(a[0])->len, lb = as_arr(a[1])->len;
+  if (la + lb > 0xFFFFFFFFu) { err = "interleave result too large"; return false; }
+  Value rv;
+  if (!make_array(h, static_cast<uint32_t>(la + lb), rv, err)) return false;  // safepoint
+  ArrayObj* r = static_cast<ArrayObj*>(rv.as.obj);
+  ArrayObj* ra = as_arr(a[0]);  // re-read after the alloc
+  ArrayObj* rb = as_arr(a[1]);
+  uint32_t w = 0;
+  uint32_t mx = static_cast<uint32_t>(la > lb ? la : lb);
+  for (uint32_t k = 0; k < mx; ++k) {
+    if (k < la) r->slots->data[w++] = ra->slots->data[k];
+    if (k < lb) r->slots->data[w++] = rb->slots->data[k];
+  }
+  out = rv;
+  return true;
+}
+
+bool prepend_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "prepend expects an array"; return false; }
+  uint32_t len = as_arr(a[0])->len;
+  if (len == 0xFFFFFFFFu) { err = "prepend result too large"; return false; }
+  Value rv;
+  if (!make_array(h, len + 1, rv, err)) return false;  // safepoint
+  ArrayObj* r = static_cast<ArrayObj*>(rv.as.obj);
+  ArrayObj* src = as_arr(a[0]);  // re-read after the alloc
+  Value v = a[1];                // re-read after the alloc
+  r->slots->data[0] = v;
+  for (uint32_t i = 0; i < len; ++i) r->slots->data[i + 1] = src->slots->data[i];
+  out = rv;
+  return true;
+}
+bool append_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "append expects an array"; return false; }
+  uint32_t len = as_arr(a[0])->len;
+  if (len == 0xFFFFFFFFu) { err = "append result too large"; return false; }
+  Value rv;
+  if (!make_array(h, len + 1, rv, err)) return false;  // safepoint
+  ArrayObj* r = static_cast<ArrayObj*>(rv.as.obj);
+  ArrayObj* src = as_arr(a[0]);  // re-read after the alloc
+  Value v = a[1];                // re-read after the alloc
+  for (uint32_t i = 0; i < len; ++i) r->slots->data[i] = src->slots->data[i];
+  r->slots->data[len] = v;
+  out = rv;
+  return true;
+}
+
+bool span_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "span expects an array"; return false; }
+  ArrayObj* arr = as_arr(a[0]);
+  if (arr->len == 0) { err = "span of empty array"; return false; }
+  if (!is_num(arr->slots->data[0])) { err = "span expects numbers"; return false; }
+  double mn = to_double(arr->slots->data[0]), mx = mn;
+  for (uint32_t i = 1; i < arr->len; ++i) {
+    if (!is_num(arr->slots->data[i])) { err = "span expects numbers"; return false; }
+    double d = to_double(arr->slots->data[i]);
+    if (d < mn) mn = d;
+    if (d > mx) mx = d;
+  }
+  out = Value::number(mx - mn);
+  return true;
+}
+
+bool sum_abs_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "sum_abs expects an array"; return false; }
+  ArrayObj* arr = as_arr(a[0]);
+  bool any_double = false;
+  int64_t si = 0;
+  double sd = 0;
+  for (uint32_t i = 0; i < arr->len; ++i) {
+    const Value& e = arr->slots->data[i];
+    if (!is_num(e)) { err = "sum_abs expects numbers"; return false; }
+    if (e.tag == Tag::Double) any_double = true;
+    si = static_cast<int64_t>(static_cast<uint64_t>(si) + u_abs(as_i64(e)));
+    sd += std::fabs(to_double(e));
+  }
+  out = any_double ? Value::number(sd) : Value::integer(si);
+  return true;
+}
+
+bool gcd_all_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "gcd_all expects an array"; return false; }
+  ArrayObj* arr = as_arr(a[0]);
+  uint64_t g = 0;
+  for (uint32_t i = 0; i < arr->len; ++i) {
+    if (arr->slots->data[i].tag != Tag::Int) { err = "gcd_all expects integers"; return false; }
+    g = gcd_u(g, u_abs(arr->slots->data[i].as.i));
+  }
+  if (g > static_cast<uint64_t>(kI64Max)) { err = "gcd_all out of range"; return false; }
+  out = Value::integer(static_cast<int64_t>(g));
+  return true;
+}
+
+// --- map ---
+
+bool has_all_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_map(a[0])) { err = "has_all expects a map"; return false; }
+  if (!is_array(a[1])) { err = "has_all expects a key array"; return false; }
+  MapObj* m = as_map(a[0]);
+  ArrayObj* ks = as_arr(a[1]);
+  for (uint32_t i = 0; i < ks->len; ++i) {
+    const Value& k = ks->slots->data[i];
+    if (!is_str(k)) { err = "has_all keys must be strings"; return false; }
+    if (map_index(m, sbytes(k), slen(k)) < 0) { out = Value::boolean(false); return true; }
+  }
+  out = Value::boolean(true);
+  return true;
+}
+
+bool merge3_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_map(a[0]) || !is_map(a[1]) || !is_map(a[2])) { err = "merge3 expects three maps"; return false; }
+  Value rv;
+  if (!make_map(h, rv, err)) return false;  // safepoint
+  HandleScope hs(h);
+  size_t mi = hs.root(rv.as.obj);
+  for (int src = 0; src < 3; ++src) {
+    uint32_t len = as_map(a[src])->len;
+    for (uint32_t i = 0; i < len; ++i) {
+      MapObj* sm = as_map(a[src]);  // re-read source
+      StringObj* ks = static_cast<StringObj*>(sm->keys->data[i].as.obj);
+      std::string key(ks->bytes->data, ks->len);
+      Value val = sm->vals->data[i];
+      MapObj* nm = hs.get<MapObj>(mi);
+      map_put(nm, key.data(), static_cast<uint32_t>(key.size()), val, h);  // allocates
+      if (h.over_cap()) { err = "out of memory"; return false; }
+    }
+  }
+  out = Value::object(hs.get<MapObj>(mi));
+  return true;
+}
+
+// =======================================================================
 // Registry
 // =======================================================================
 
@@ -3382,6 +3696,26 @@ const NativeEntry kNatives[] = {
     {"zip3", 3, 3, zip3_fn},           {"replace_at", 3, 3, replace_at_fn},
     // map
     {"values_at", 2, 2, values_at_fn}, {"zip_map", 2, 2, zip_map_fn},
+
+    // --- batch 7 ---
+    // math
+    {"square", 1, 1, square_fn},       {"cube", 1, 1, cube_fn},
+    {"sigmoid", 1, 1, sigmoid_fn},     {"relu", 1, 1, relu_fn},
+    {"log_factorial", 1, 1, log_factorial_fn}, {"midpoint", 2, 2, midpoint_fn},
+    {"fract", 1, 1, fract_fn},         {"cot", 1, 1, cot_fn},
+    {"sec", 1, 1, sec_fn},             {"csc", 1, 1, csc_fn},
+    {"logaddexp", 2, 2, logaddexp_fn}, {"gcd3", 3, 3, gcd3_fn},
+    {"lcm3", 3, 3, lcm3_fn},
+    // string
+    {"surround", 2, 2, surround_fn},   {"initials", 1, 1, initials_fn},
+    {"shorten", 2, 2, shorten_fn},     {"ordinal", 1, 1, ordinal_fn},
+    // array
+    {"flatten_deep", 1, 1, flatten_deep_fn}, {"interleave", 2, 2, interleave_fn},
+    {"prepend", 2, 2, prepend_fn},     {"append", 2, 2, append_fn},
+    {"span", 1, 1, span_fn},           {"sum_abs", 1, 1, sum_abs_fn},
+    {"gcd_all", 1, 1, gcd_all_fn},
+    // map
+    {"has_all", 2, 2, has_all_fn},     {"merge3", 3, 3, merge3_fn},
 };
 
 constexpr size_t kNativeCount = sizeof(kNatives) / sizeof(kNatives[0]);
