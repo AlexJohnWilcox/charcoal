@@ -1,6 +1,9 @@
 #include "charcoal.h"
+#include "astprint.h"
 #include "disasm.h"
+#include "lexer.h"
 #include "loader.h"
+#include "parser.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -34,7 +37,10 @@ int usage() {
                "usage:\n"
                "  charcoal compile <in.char> -o <out.cbc>\n"
                "  charcoal run <module.cbc>\n"
-               "  charcoal dis <module.cbc>\n");
+               "  charcoal dis <module.cbc>\n"
+               "  charcoal tokens <in.char>\n"
+               "  charcoal ast <in.char>\n"
+               "  charcoal fmt <in.char>\n");
   return 1;
 }
 
@@ -90,6 +96,56 @@ int do_dis(int argc, char** argv) {
   return 0;
 }
 
+// Lex a source file and read it into a token vector, reporting a clean error on
+// a missing file or a lex failure. Shared by the source-inspection commands.
+bool lex_source(const char* path, coal::LexResult& lr, std::vector<uint8_t>& src) {
+  std::string err;
+  if (!read_file(path, src, err)) { std::fprintf(stderr, "%s\n", err.c_str()); return false; }
+  lr = coal::lex(reinterpret_cast<const char*>(src.data()), src.size());
+  if (!lr.error.empty()) { std::fprintf(stderr, "lex error: %s\n", lr.error.c_str()); return false; }
+  return true;
+}
+
+int do_tokens(int argc, char** argv) {
+  // charcoal tokens <in.char>
+  if (argc != 3) return usage();
+  coal::LexResult lr;
+  std::vector<uint8_t> src;
+  if (!lex_source(argv[2], lr, src)) return 1;
+  std::fputs(coal::dump_tokens(lr.tokens).c_str(), stdout);
+  return 0;
+}
+
+int do_ast(int argc, char** argv) {
+  // charcoal ast <in.char>
+  if (argc != 3) return usage();
+  coal::LexResult lr;
+  std::vector<uint8_t> src;
+  if (!lex_source(argv[2], lr, src)) return 1;
+  coal::ParseResult pr = coal::parse(lr.tokens);
+  if (!pr.error.empty() || !pr.program) {
+    std::fprintf(stderr, "parse error: %s\n", pr.error.c_str());
+    return 1;
+  }
+  std::fputs(coal::dump_ast(pr.program).c_str(), stdout);
+  return 0;
+}
+
+int do_fmt(int argc, char** argv) {
+  // charcoal fmt <in.char>
+  if (argc != 3) return usage();
+  coal::LexResult lr;
+  std::vector<uint8_t> src;
+  if (!lex_source(argv[2], lr, src)) return 1;
+  coal::ParseResult pr = coal::parse(lr.tokens);
+  if (!pr.error.empty() || !pr.program) {
+    std::fprintf(stderr, "parse error: %s\n", pr.error.c_str());
+    return 1;
+  }
+  std::fputs(coal::format_source(pr.program).c_str(), stdout);
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -98,5 +154,8 @@ int main(int argc, char** argv) {
   if (cmd == "compile") return do_compile(argc, argv);
   if (cmd == "run")     return do_run(argc, argv);
   if (cmd == "dis")     return do_dis(argc, argv);
+  if (cmd == "tokens")  return do_tokens(argc, argv);
+  if (cmd == "ast")     return do_ast(argc, argv);
+  if (cmd == "fmt")     return do_fmt(argc, argv);
   return usage();
 }

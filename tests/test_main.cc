@@ -17,6 +17,7 @@ void test_e2e();
 void test_gc();
 void test_native();
 void test_disasm();
+void test_astprint();
 
 int main() {
   test_value();
@@ -33,6 +34,7 @@ int main() {
   test_e2e();
   test_native();
   test_disasm();
+  test_astprint();
 
   if (g_failures) {
     std::fprintf(stderr, "%d failure(s)\n", g_failures);
