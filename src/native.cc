@@ -2557,8 +2557,14 @@ bool argsort_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
     if (!is_num(src->slots->data[i])) { err = "argsort expects numbers"; return false; }
   std::vector<uint32_t> idx(src->len);
   for (uint32_t i = 0; i < src->len; ++i) idx[i] = i;
-  std::stable_sort(idx.begin(), idx.end(), [&](uint32_t i, uint32_t j) {
-    return to_double(src->slots->data[i]) < to_double(src->slots->data[j]);
+  // std::sort (not std::stable_sort) avoids libstdc++'s _Temporary_buffer, whose
+  // operator-new / free pairing trips ASan's alloc-dealloc-mismatch check; the
+  // index tie-break keeps the order stable and fully deterministic regardless.
+  std::sort(idx.begin(), idx.end(), [&](uint32_t i, uint32_t j) {
+    double di = to_double(src->slots->data[i]);
+    double dj = to_double(src->slots->data[j]);
+    if (di != dj) return di < dj;
+    return i < j;
   });
   Value rv;
   if (!make_array(h, static_cast<uint32_t>(idx.size()), rv, err)) return false;  // safepoint

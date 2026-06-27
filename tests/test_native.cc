@@ -526,6 +526,11 @@ void test_native() {
   // array
   OUT("a = argsort([3, 1, 2]); print a[0];", "1");   // smallest value at index 1
   OUT("a = argsort([3, 1, 2]); print a[2];", "0");
+  // larger array: exercises the sort's full path, not just the small-array case
+  OUT("a = range(50, 0, 0 - 1); s = argsort(a); print s[0];", "49");   // value 1 is at index 49
+  OUT("a = range(50, 0, 0 - 1); s = argsort(a); print s[49];", "0");   // value 50 is at index 0
+  OUT("s = argsort([1, 1, 1, 1]); print s[0];", "0");                  // ties: stable order
+  OUT("s = argsort([2, 1, 2, 1]); print s[0];", "1");                  // first 1 at index 1
   OUT("a = [1, 2, 3]; swap(a, 0, 2); print a[0];", "3");
   ERRS("a = [1]; swap(a, 0, 5);");
   OUT("a = unzip([[1, 4], [2, 5], [3, 6]]); print a[0][2];", "3");
