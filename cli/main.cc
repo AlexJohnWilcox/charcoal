@@ -4,10 +4,12 @@
 #include "lexer.h"
 #include "loader.h"
 #include "parser.h"
+#include "verifier.h"
 
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -40,7 +42,10 @@ int usage() {
                "  charcoal dis <module.cbc>\n"
                "  charcoal tokens <in.char>\n"
                "  charcoal ast <in.char>\n"
-               "  charcoal fmt <in.char>\n");
+               "  charcoal fmt <in.char>\n"
+               "  charcoal check <in.char>\n"
+               "  charcoal eval <source>\n"
+               "  charcoal repl\n");
   return 1;
 }
 
@@ -146,6 +151,69 @@ int do_fmt(int argc, char** argv) {
   return 0;
 }
 
+// Compile and statically check a program — lex, parse, fold, compile, and run it
+// back through the loader and verifier — without executing it. Prints "ok" when
+// the module is well-formed, or the first error encountered.
+int do_check(int argc, char** argv) {
+  // charcoal check <in.char>
+  if (argc != 3) return usage();
+  std::vector<uint8_t> src;
+  std::string err;
+  if (!read_file(argv[2], src, err)) { std::fprintf(stderr, "%s\n", err.c_str()); return 1; }
+
+  std::vector<uint8_t> cbc;
+  if (!coal::compile_source(reinterpret_cast<const char*>(src.data()), src.size(), cbc, err)) {
+    std::fprintf(stderr, "error: %s\n", err.c_str());
+    return 1;
+  }
+  coal::LoadResult ld = coal::load_cbc(cbc.data(), cbc.size());
+  if (!ld.ok) { std::fprintf(stderr, "load error: %s\n", ld.error.c_str()); return 1; }
+  auto v = coal::verify(ld.module);
+  if (!v.ok) { std::fprintf(stderr, "verify error: %s\n", v.error.c_str()); return 1; }
+  std::fputs("ok\n", stdout);
+  return 0;
+}
+
+int do_eval(int argc, char** argv) {
+  // charcoal eval <source>
+  if (argc != 3) return usage();
+  std::string src = argv[2];
+  std::string err;
+  std::vector<uint8_t> cbc;
+  if (!coal::compile_source(src.data(), src.size(), cbc, err)) {
+    std::fprintf(stderr, "compile error: %s\n", err.c_str());
+    return 1;
+  }
+  coal::RunResult r = coal::run_cbc(cbc.data(), cbc.size());
+  std::fputs(r.output.c_str(), stdout);
+  if (!r.ok) { std::fprintf(stderr, "runtime error: %s\n", r.error.c_str()); return 1; }
+  return 0;
+}
+
+// A line-at-a-time REPL: each input line is compiled and run as its own program,
+// with output echoed to stdout and errors reported without stopping the loop.
+int do_repl(int argc, char**) {
+  if (argc != 2) return usage();
+  std::string line;
+  while (true) {
+    std::fputs("charcoal> ", stderr);   // prompt on stderr; stdout stays results-only
+    if (!std::getline(std::cin, line)) break;
+    if (line.empty()) continue;
+
+    std::string err;
+    std::vector<uint8_t> cbc;
+    if (!coal::compile_source(line.data(), line.size(), cbc, err)) {
+      std::fprintf(stderr, "compile error: %s\n", err.c_str());
+      continue;
+    }
+    coal::RunResult r = coal::run_cbc(cbc.data(), cbc.size());
+    std::fputs(r.output.c_str(), stdout);
+    if (!r.output.empty() && r.output.back() != '\n') std::fputc('\n', stdout);
+    if (!r.ok) std::fprintf(stderr, "runtime error: %s\n", r.error.c_str());
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -157,5 +225,8 @@ int main(int argc, char** argv) {
   if (cmd == "tokens")  return do_tokens(argc, argv);
   if (cmd == "ast")     return do_ast(argc, argv);
   if (cmd == "fmt")     return do_fmt(argc, argv);
+  if (cmd == "check")   return do_check(argc, argv);
+  if (cmd == "eval")    return do_eval(argc, argv);
+  if (cmd == "repl")    return do_repl(argc, argv);
   return usage();
 }

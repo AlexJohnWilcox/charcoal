@@ -568,4 +568,89 @@ void test_native() {
     CHECK(r.ok);
     CHECK(r.output == "41");
   }
+
+  // ===================== batch 6 =====================
+
+  // math
+  OUT("print clamp01(1.5) == 1.0;", "true");
+  OUT("print clamp01(0 - 0.5) == 0.0;", "true");
+  OUT("print wrap(7.0, 0.0, 5.0) == 2.0;", "true");
+  OUT("print wrap(0 - 1.0, 0.0, 5.0) == 4.0;", "true");
+  ERRS("print wrap(1.0, 5.0, 0.0);");
+  OUT("print remap(5.0, 0.0, 10.0, 0.0, 100.0) == 50.0;", "true");
+  ERRS("print remap(1.0, 2.0, 2.0, 0.0, 1.0);");
+  OUT("print step(3.0, 2.0);", "0");
+  OUT("print step(3.0, 5.0);", "1");
+  OUT("print ceil_div(7, 2);", "4");
+  OUT("print ceil_div(6, 2);", "3");
+  ERRS("print ceil_div(5, 0);");
+  OUT("print is_pow2(8);", "true");
+  OUT("print is_pow2(6);", "false");
+  OUT("print is_pow2(0);", "false");
+  OUT("print ncr(5, 2);", "10");
+  OUT("print ncr(52, 5);", "2598960");
+  OUT("print ncr(5, 7);", "0");
+  OUT("print npr(5, 2);", "20");
+  OUT("print npr(5, 0);", "1");
+  OUT("print digit_sum(1234);", "10");
+  OUT("print digit_sum(0 - 99);", "18");
+  OUT("print reverse_int(123);", "321");
+  OUT("print reverse_int(0 - 120);", "-21");
+  OUT("print is_square(16);", "true");
+  OUT("print is_square(15);", "false");
+  OUT("print triangular(5);", "15");
+
+  // string
+  OUT("print snake_to_camel(\"foo_bar_baz\");", "fooBarBaz");
+  OUT("print camel_to_snake(\"fooBarBaz\");", "foo_bar_baz");
+  OUT("print camel_to_snake(\"Hello\");", "hello");
+  OUT("print count_words(\"  hello   world  \");", "2");
+  OUT("print count_words(\"\");", "0");
+  OUT("print squeeze(\"aaabbbc\");", "abc");
+  OUT("print is_blank(\"   \");", "true");
+  OUT("print is_blank(\" a \");", "false");
+  OUT("print strip_chars(\"xxhelloxx\", \"x\");", "hello");
+  OUT("print repeat_char(\"=\", 5);", "=====");
+  ERRS("print repeat_char(\"ab\", 3);");
+  OUT("print indent(\"a\nb\", 2);", "  a\n  b");
+
+  // array
+  OUT("a = take_last([1, 2, 3, 4], 2); print a[0];", "3");
+  OUT("a = take_last([1, 2, 3, 4], 2); print len(a);", "2");
+  OUT("a = drop_last([1, 2, 3, 4], 1); print a[2];", "3");
+  OUT("a = positions([1, 2, 1, 3, 1], 1); print len(a);", "3");
+  OUT("a = positions([1, 2, 1, 3, 1], 1); print a[1];", "2");
+  OUT("a = without([1, 2, 1, 3], 1); print len(a);", "2");
+  OUT("a = without([1, 2, 1, 3], 1); print a[0];", "2");
+  OUT("a = zip3([1, 2], [3, 4], [5, 6]); print a[1][2];", "6");
+  OUT("a = zip3([1, 2], [3, 4], [5, 6]); print a[0][0];", "1");
+  OUT("a = replace_at([1, 2, 3], 1, 9); print a[1];", "9");
+  OUT("b = [1, 2, 3]; a = replace_at(b, 1, 9); print b[1];", "2");   // source untouched
+  ERRS("print replace_at([1, 2, 3], 5, 9);");
+
+  // map
+  OUT("m = {\"a\"=1, \"b\"=2, \"c\"=3}; a = values_at(m, [\"a\", \"c\"]); print a[0] + a[1];", "4");
+  OUT("m = {\"a\"=1}; a = values_at(m, [\"z\"]); print a[0];", "nil");
+  OUT("m = zip_map([\"a\", \"b\"], [10, 20]); print get(m, \"b\");", "20");
+  OUT("m = zip_map([\"a\", \"b\"], [10, 20]); print len(m);", "2");
+
+  // GC pressure across batch-6 multi-alloc builtins (zip3 + zip_map + values_at).
+  {
+    const char* src =
+        "z = zip3([1, 2, 3], [4, 5, 6], [7, 8, 9]);"
+        "zm = zip_map([\"a\", \"b\", \"c\"], [10, 20, 30]);"
+        "va = values_at(zm, [\"b\", \"c\"]);"
+        "wo = without([5, 1, 5, 2, 5], 5);"
+        "i = 200;"
+        "while (i) { junk = [0, 0, 0, 0, 0]; i = i - 1; }"
+        "print z[2][1] + get(zm, \"c\") + va[0] + wo[1];";  // 6 + 30 + 20 + 2 = 58
+    auto l = lex(src, std::strlen(src));
+    auto p = parse(l.tokens);
+    auto c = compile(p.program);
+    CHECK(c.ok);
+    Heap h(48 * 1024);
+    auto r = run(c.module, h, Limits{});
+    CHECK(r.ok);
+    CHECK(r.output == "58");
+  }
 }
