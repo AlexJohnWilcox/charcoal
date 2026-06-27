@@ -2218,6 +2218,589 @@ bool is_function_fn(Value* a, uint32_t, Heap&, Value& out, std::string&) {
 }
 
 // =======================================================================
+// Batch 5 — statistics, special functions, and classic algorithms
+//
+// Same safepoint discipline throughout. Several reductions here work over a
+// C++ `std::vector<double>` copied out of the array first, which keeps them
+// allocation-free on the Charcoal heap (the source can never move under them).
+// =======================================================================
+
+// --- math: integer ---
+
+bool is_even_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (a[0].tag != Tag::Int) { err = "is_even expects an integer"; return false; }
+  out = Value::boolean((a[0].as.i & 1) == 0);
+  return true;
+}
+bool is_odd_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (a[0].tag != Tag::Int) { err = "is_odd expects an integer"; return false; }
+  out = Value::boolean((a[0].as.i & 1) != 0);
+  return true;
+}
+
+// Floored integer division: the quotient rounds toward negative infinity.
+bool floor_div_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (a[0].tag != Tag::Int || a[1].tag != Tag::Int) { err = "floor_div expects integers"; return false; }
+  int64_t x = a[0].as.i, y = a[1].as.i;
+  if (y == 0) { err = "floor_div by zero"; return false; }
+  if (x == kI64Min && y == -1) { err = "floor_div overflow"; return false; }
+  int64_t q = x / y;
+  if ((x % y != 0) && ((x < 0) != (y < 0))) q -= 1;  // round toward -inf
+  out = Value::integer(q);
+  return true;
+}
+
+// Modular exponentiation (base^exp mod m) via square-and-multiply. The modulus
+// is capped so every intermediate product stays inside uint64 without 128-bit
+// arithmetic: (m-1)^2 < 2^64 requires m <= 3037000499.
+bool pow_mod_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (a[0].tag != Tag::Int || a[1].tag != Tag::Int || a[2].tag != Tag::Int) {
+    err = "pow_mod expects integers"; return false;
+  }
+  int64_t e = a[1].as.i, ms = a[2].as.i;
+  if (e < 0) { err = "pow_mod exponent must be non-negative"; return false; }
+  if (ms <= 0) { err = "pow_mod modulus must be positive"; return false; }
+  if (ms > 3037000499LL) { err = "pow_mod modulus too large"; return false; }
+  uint64_t m = static_cast<uint64_t>(ms);
+  if (m == 1) { out = Value::integer(0); return true; }
+  int64_t bb = a[0].as.i % ms;
+  if (bb < 0) bb += ms;
+  uint64_t base = static_cast<uint64_t>(bb), result = 1, ue = static_cast<uint64_t>(e);
+  while (ue) {
+    if (ue & 1u) result = (result * base) % m;
+    base = (base * base) % m;
+    ue >>= 1;
+  }
+  out = Value::integer(static_cast<int64_t>(result));
+  return true;
+}
+
+// Round to `nd` decimal places (0..15), returning a double.
+bool round_to_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0])) { err = "round_to expects a number"; return false; }
+  if (a[1].tag != Tag::Int) { err = "round_to places must be an integer"; return false; }
+  int64_t nd = a[1].as.i;
+  if (nd < 0) nd = 0;
+  if (nd > 15) nd = 15;
+  double scale = std::pow(10.0, static_cast<double>(nd));
+  out = Value::number(std::round(to_double(a[0]) * scale) / scale);
+  return true;
+}
+
+// --- math: statistics over an array (allocation-free) ---
+
+bool collect_nums(Value* a, const char* name, std::vector<double>& v, std::string& err) {
+  if (!is_array(a[0])) { err = std::string(name) + " expects an array"; return false; }
+  ArrayObj* arr = as_arr(a[0]);
+  v.reserve(arr->len);
+  for (uint32_t i = 0; i < arr->len; ++i) {
+    const Value& e = arr->slots->data[i];
+    if (!is_num(e)) { err = std::string(name) + " expects numbers"; return false; }
+    v.push_back(to_double(e));
+  }
+  return true;
+}
+
+bool variance_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  std::vector<double> v;
+  if (!collect_nums(a, "variance", v, err)) return false;
+  if (v.empty()) { err = "variance of empty array"; return false; }
+  double mean = 0;
+  for (double x : v) mean += x;
+  mean /= static_cast<double>(v.size());
+  double acc = 0;
+  for (double x : v) acc += (x - mean) * (x - mean);
+  out = Value::number(acc / static_cast<double>(v.size()));
+  return true;
+}
+bool stddev_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  std::vector<double> v;
+  if (!collect_nums(a, "stddev", v, err)) return false;
+  if (v.empty()) { err = "stddev of empty array"; return false; }
+  double mean = 0;
+  for (double x : v) mean += x;
+  mean /= static_cast<double>(v.size());
+  double acc = 0;
+  for (double x : v) acc += (x - mean) * (x - mean);
+  out = Value::number(std::sqrt(acc / static_cast<double>(v.size())));
+  return true;
+}
+bool median_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  std::vector<double> v;
+  if (!collect_nums(a, "median", v, err)) return false;
+  if (v.empty()) { err = "median of empty array"; return false; }
+  std::sort(v.begin(), v.end());
+  size_t n = v.size();
+  out = Value::number((n & 1) ? v[n / 2] : (v[n / 2 - 1] + v[n / 2]) / 2.0);
+  return true;
+}
+// The most frequent value (the smallest such on a tie). O(n^2), no allocation.
+bool mode_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  std::vector<double> v;
+  if (!collect_nums(a, "mode", v, err)) return false;
+  if (v.empty()) { err = "mode of empty array"; return false; }
+  double best = v[0];
+  size_t best_count = 0;
+  for (size_t i = 0; i < v.size(); ++i) {
+    size_t c = 0;
+    for (size_t j = 0; j < v.size(); ++j) if (v[j] == v[i]) ++c;
+    if (c > best_count || (c == best_count && v[i] < best)) { best = v[i]; best_count = c; }
+  }
+  out = Value::number(best);
+  return true;
+}
+
+// --- math: special functions (no allocation) ---
+
+bool gamma_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0])) { err = "gamma expects a number"; return false; }
+  out = Value::number(std::tgamma(to_double(a[0])));
+  return true;
+}
+bool lgamma_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0])) { err = "lgamma expects a number"; return false; }
+  out = Value::number(std::lgamma(to_double(a[0])));
+  return true;
+}
+bool erf_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0])) { err = "erf expects a number"; return false; }
+  out = Value::number(std::erf(to_double(a[0])));
+  return true;
+}
+bool erfc_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0])) { err = "erfc expects a number"; return false; }
+  out = Value::number(std::erfc(to_double(a[0])));
+  return true;
+}
+bool fdim_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0]) || !is_num(a[1])) { err = "fdim expects numbers"; return false; }
+  out = Value::number(std::fdim(to_double(a[0]), to_double(a[1])));
+  return true;
+}
+bool fma_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_num(a[0]) || !is_num(a[1]) || !is_num(a[2])) { err = "fma expects numbers"; return false; }
+  out = Value::number(std::fma(to_double(a[0]), to_double(a[1]), to_double(a[2])));
+  return true;
+}
+// frexp(x) -> [mantissa, exponent]; one allocation holding only scalars.
+bool frexp_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_num(a[0])) { err = "frexp expects a number"; return false; }
+  int e = 0;
+  double m = std::frexp(to_double(a[0]), &e);
+  Value rv;
+  if (!make_array(h, 2, rv, err)) return false;  // safepoint
+  ArrayObj* arr = static_cast<ArrayObj*>(rv.as.obj);
+  arr->slots->data[0] = Value::number(m);
+  arr->slots->data[1] = Value::integer(e);
+  out = rv;
+  return true;
+}
+// modf(x) -> [integer_part, fractional_part]; both doubles.
+bool modf_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_num(a[0])) { err = "modf expects a number"; return false; }
+  double ip = 0;
+  double f = std::modf(to_double(a[0]), &ip);
+  Value rv;
+  if (!make_array(h, 2, rv, err)) return false;  // safepoint
+  ArrayObj* arr = static_cast<ArrayObj*>(rv.as.obj);
+  arr->slots->data[0] = Value::number(ip);
+  arr->slots->data[1] = Value::number(f);
+  out = rv;
+  return true;
+}
+
+// --- string ---
+
+// partition(s, sep) -> [before, sep, after]; if `sep` is absent, [s, "", ""].
+bool partition_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_str(a[0]) || !is_str(a[1])) { err = "partition expects strings"; return false; }
+  std::string s(sbytes(a[0]), slen(a[0]));
+  std::string sep(sbytes(a[1]), slen(a[1]));
+  if (sep.empty()) { err = "partition separator must be non-empty"; return false; }
+  std::string before, mid, after;
+  size_t f = s.find(sep);
+  if (f == std::string::npos) { before = s; }
+  else { before = s.substr(0, f); mid = sep; after = s.substr(f + sep.size()); }
+  std::string parts[3] = {before, mid, after};
+  Value rv;
+  if (!make_array(h, 3, rv, err)) return false;  // safepoint
+  HandleScope hs(h);
+  size_t ri = hs.root(rv.as.obj);
+  for (uint32_t i = 0; i < 3; ++i) {
+    StringObj* so = h.new_string(parts[i].data(), static_cast<uint32_t>(parts[i].size()));  // safepoint
+    if (!so || h.over_cap()) { err = "out of memory"; return false; }
+    hs.get<ArrayObj>(ri)->slots->data[i] = Value::object(so);  // re-read result
+  }
+  out = Value::object(hs.get<ArrayObj>(ri));
+  return true;
+}
+
+bool index_from_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_str(a[0]) || !is_str(a[1])) { err = "index_from expects strings"; return false; }
+  if (!is_num(a[2])) { err = "index_from start must be a number"; return false; }
+  std::string s(sbytes(a[0]), slen(a[0]));
+  std::string sub(sbytes(a[1]), slen(a[1]));
+  int64_t start = as_i64(a[2]);
+  if (start < 0) start = 0;
+  if (start > static_cast<int64_t>(s.size())) { out = Value::integer(-1); return true; }
+  size_t p = s.find(sub, static_cast<size_t>(start));
+  out = Value::integer(p == std::string::npos ? -1 : static_cast<int64_t>(p));
+  return true;
+}
+
+bool is_palindrome_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_str(a[0])) { err = "is_palindrome expects a string"; return false; }
+  const char* p = sbytes(a[0]);
+  uint32_t n = slen(a[0]);
+  for (uint32_t i = 0, j = n; i + 1 < j; ++i) { --j; if (p[i] != p[j]) { out = Value::boolean(false); return true; } }
+  out = Value::boolean(true);
+  return true;
+}
+
+bool common_prefix_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_str(a[0]) || !is_str(a[1])) { err = "common_prefix expects strings"; return false; }
+  std::string x(sbytes(a[0]), slen(a[0]));
+  std::string y(sbytes(a[1]), slen(a[1]));
+  size_t n = 0, lim = x.size() < y.size() ? x.size() : y.size();
+  while (n < lim && x[n] == y[n]) ++n;
+  return make_string(h, x.data(), static_cast<uint32_t>(n), out, err);
+}
+bool common_suffix_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_str(a[0]) || !is_str(a[1])) { err = "common_suffix expects strings"; return false; }
+  std::string x(sbytes(a[0]), slen(a[0]));
+  std::string y(sbytes(a[1]), slen(a[1]));
+  size_t n = 0, lim = x.size() < y.size() ? x.size() : y.size();
+  while (n < lim && x[x.size() - 1 - n] == y[y.size() - 1 - n]) ++n;
+  return make_string(h, x.data() + (x.size() - n), static_cast<uint32_t>(n), out, err);
+}
+
+// Levenshtein edit distance via a rolling two-row DP. Bytes are copied to C++
+// locals up front, so there is no Charcoal-heap allocation at all.
+bool levenshtein_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_str(a[0]) || !is_str(a[1])) { err = "levenshtein expects strings"; return false; }
+  std::string x(sbytes(a[0]), slen(a[0]));
+  std::string y(sbytes(a[1]), slen(a[1]));
+  size_t n = x.size(), m = y.size();
+  std::vector<int64_t> prev(m + 1), cur(m + 1);
+  for (size_t j = 0; j <= m; ++j) prev[j] = static_cast<int64_t>(j);
+  for (size_t i = 1; i <= n; ++i) {
+    cur[0] = static_cast<int64_t>(i);
+    for (size_t j = 1; j <= m; ++j) {
+      int64_t cost = (x[i - 1] == y[j - 1]) ? 0 : 1;
+      int64_t del = prev[j] + 1, ins = cur[j - 1] + 1, sub = prev[j - 1] + cost;
+      int64_t best = del < ins ? del : ins;
+      cur[j] = best < sub ? best : sub;
+    }
+    std::swap(prev, cur);
+  }
+  out = Value::integer(prev[m]);
+  return true;
+}
+
+bool hamming_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_str(a[0]) || !is_str(a[1])) { err = "hamming expects strings"; return false; }
+  if (slen(a[0]) != slen(a[1])) { err = "hamming expects equal-length strings"; return false; }
+  const char* p = sbytes(a[0]);
+  const char* q = sbytes(a[1]);
+  uint32_t n = slen(a[0]);
+  int64_t c = 0;
+  for (uint32_t i = 0; i < n; ++i) if (p[i] != q[i]) ++c;
+  out = Value::integer(c);
+  return true;
+}
+
+bool caesar_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_str(a[0])) { err = "caesar expects a string"; return false; }
+  if (a[1].tag != Tag::Int) { err = "caesar shift must be an integer"; return false; }
+  std::string s(sbytes(a[0]), slen(a[0]));
+  int shift = static_cast<int>(((a[1].as.i % 26) + 26) % 26);
+  for (char& c : s) {
+    if (c >= 'a' && c <= 'z') c = static_cast<char>('a' + (c - 'a' + shift) % 26);
+    else if (c >= 'A' && c <= 'Z') c = static_cast<char>('A' + (c - 'A' + shift) % 26);
+  }
+  return make_string(h, s.data(), static_cast<uint32_t>(s.size()), out, err);
+}
+
+// from_bytes: inverse of to_bytes. Values are validated and copied into a C++
+// string before the single allocation, so no array pointer is held across it.
+bool from_bytes_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "from_bytes expects an array"; return false; }
+  ArrayObj* arr = as_arr(a[0]);
+  std::string s;
+  s.reserve(arr->len);
+  for (uint32_t i = 0; i < arr->len; ++i) {
+    const Value& e = arr->slots->data[i];
+    if (e.tag != Tag::Int || e.as.i < 0 || e.as.i > 255) { err = "from_bytes expects byte integers (0-255)"; return false; }
+    s += static_cast<char>(e.as.i);
+  }
+  return make_string(h, s.data(), static_cast<uint32_t>(s.size()), out, err);
+}
+
+bool ascii_sum_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_str(a[0])) { err = "ascii_sum expects a string"; return false; }
+  const char* p = sbytes(a[0]);
+  uint32_t n = slen(a[0]);
+  int64_t total = 0;
+  for (uint32_t i = 0; i < n; ++i) total += static_cast<uint8_t>(p[i]);
+  out = Value::integer(total);
+  return true;
+}
+
+// --- array ---
+
+// argsort: the indices that would sort the array ascending (stable). The order
+// is computed against the source before allocating, then only ints are stored.
+bool argsort_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "argsort expects an array"; return false; }
+  ArrayObj* src = as_arr(a[0]);
+  for (uint32_t i = 0; i < src->len; ++i)
+    if (!is_num(src->slots->data[i])) { err = "argsort expects numbers"; return false; }
+  std::vector<uint32_t> idx(src->len);
+  for (uint32_t i = 0; i < src->len; ++i) idx[i] = i;
+  std::stable_sort(idx.begin(), idx.end(), [&](uint32_t i, uint32_t j) {
+    return to_double(src->slots->data[i]) < to_double(src->slots->data[j]);
+  });
+  Value rv;
+  if (!make_array(h, static_cast<uint32_t>(idx.size()), rv, err)) return false;  // safepoint
+  ArrayObj* r = static_cast<ArrayObj*>(rv.as.obj);
+  for (size_t i = 0; i < idx.size(); ++i) r->slots->data[i] = Value::integer(idx[i]);
+  out = rv;
+  return true;
+}
+
+bool swap_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "swap expects an array"; return false; }
+  if (!is_num(a[1]) || !is_num(a[2])) { err = "swap indices must be numbers"; return false; }
+  ArrayObj* arr = as_arr(a[0]);
+  int64_t i = as_i64(a[1]), j = as_i64(a[2]);
+  if (i < 0 || j < 0 || i >= static_cast<int64_t>(arr->len) || j >= static_cast<int64_t>(arr->len)) {
+    err = "swap index out of range"; return false;
+  }
+  std::swap(arr->slots->data[i], arr->slots->data[j]);
+  out = Value::nil();
+  return true;
+}
+
+// unzip: an array of [a, b] pairs -> [array_of_a, array_of_b].
+bool unzip_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "unzip expects an array"; return false; }
+  ArrayObj* src = as_arr(a[0]);
+  uint32_t n = src->len;
+  for (uint32_t i = 0; i < n; ++i)
+    if (!is_array(src->slots->data[i]) || as_arr(src->slots->data[i])->len < 2) {
+      err = "unzip expects an array of pairs"; return false;
+    }
+  HandleScope hs(h);
+  Value outer;
+  if (!make_array(h, 2, outer, err)) return false;  // safepoint
+  size_t oi = hs.root(outer.as.obj);
+  Value firsts;
+  if (!make_array(h, n, firsts, err)) return false;  // safepoint
+  hs.get<ArrayObj>(oi)->slots->data[0] = firsts;     // re-read outer
+  Value seconds;
+  if (!make_array(h, n, seconds, err)) return false;  // safepoint
+  hs.get<ArrayObj>(oi)->slots->data[1] = seconds;     // re-read outer
+  for (uint32_t i = 0; i < n; ++i) {
+    ArrayObj* s = as_arr(a[0]);                  // re-read source
+    ArrayObj* pair = as_arr(s->slots->data[i]);
+    Value v0 = pair->slots->data[0];
+    Value v1 = pair->slots->data[1];
+    ArrayObj* o = hs.get<ArrayObj>(oi);
+    as_arr(o->slots->data[0])->slots->data[i] = v0;  // no alloc in this loop body
+    as_arr(o->slots->data[1])->slots->data[i] = v1;
+  }
+  out = Value::object(hs.get<ArrayObj>(oi));
+  return true;
+}
+
+// diff: consecutive differences (length n-1; empty for n <= 1).
+bool diff_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "diff expects an array"; return false; }
+  ArrayObj* src = as_arr(a[0]);
+  for (uint32_t i = 0; i < src->len; ++i)
+    if (!is_num(src->slots->data[i])) { err = "diff expects numbers"; return false; }
+  uint32_t n = src->len == 0 ? 0 : src->len - 1;
+  Value rv;
+  if (!make_array(h, n, rv, err)) return false;  // safepoint
+  ArrayObj* r = static_cast<ArrayObj*>(rv.as.obj);
+  src = as_arr(a[0]);  // re-read after the alloc
+  for (uint32_t i = 0; i < n; ++i) {
+    const Value& x = src->slots->data[i];
+    const Value& y = src->slots->data[i + 1];
+    if (x.tag == Tag::Double || y.tag == Tag::Double)
+      r->slots->data[i] = Value::number(to_double(y) - to_double(x));
+    else
+      r->slots->data[i] = Value::integer(static_cast<int64_t>(static_cast<uint64_t>(as_i64(y)) - static_cast<uint64_t>(as_i64(x))));
+  }
+  out = rv;
+  return true;
+}
+
+bool running_extreme(Value* a, bool want_max, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "expects an array"; return false; }
+  ArrayObj* src = as_arr(a[0]);
+  for (uint32_t i = 0; i < src->len; ++i)
+    if (!is_num(src->slots->data[i])) { err = "expects numbers"; return false; }
+  uint32_t len = src->len;
+  Value rv;
+  if (!make_array(h, len, rv, err)) return false;  // safepoint
+  ArrayObj* r = static_cast<ArrayObj*>(rv.as.obj);
+  src = as_arr(a[0]);  // re-read after the alloc
+  if (len == 0) { out = rv; return true; }
+  Value best = src->slots->data[0];
+  double bd = to_double(best);
+  for (uint32_t i = 0; i < len; ++i) {
+    double d = to_double(src->slots->data[i]);
+    if ((want_max && d > bd) || (!want_max && d < bd)) { best = src->slots->data[i]; bd = d; }
+    r->slots->data[i] = best;
+  }
+  out = rv;
+  return true;
+}
+bool running_max_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) { return running_extreme(a, true,  h, out, err); }
+bool running_min_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) { return running_extreme(a, false, h, out, err); }
+
+// linspace(start, end, n): n evenly spaced doubles from start to end inclusive.
+bool linspace_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_num(a[0]) || !is_num(a[1])) { err = "linspace expects numbers"; return false; }
+  if (a[2].tag != Tag::Int) { err = "linspace count must be an integer"; return false; }
+  int64_t n = a[2].as.i;
+  if (n < 0) { err = "linspace count must be non-negative"; return false; }
+  if (n > (1 << 20)) { err = "linspace count too large"; return false; }
+  double start = to_double(a[0]), end = to_double(a[1]);
+  Value rv;
+  if (!make_array(h, static_cast<uint32_t>(n), rv, err)) return false;  // safepoint
+  ArrayObj* r = static_cast<ArrayObj*>(rv.as.obj);
+  for (int64_t i = 0; i < n; ++i) {
+    double t = (n == 1) ? 0.0 : static_cast<double>(i) / static_cast<double>(n - 1);
+    r->slots->data[i] = Value::number(start + (end - start) * t);
+  }
+  out = rv;
+  return true;
+}
+
+bool scale_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "scale expects an array"; return false; }
+  if (!is_num(a[1])) { err = "scale factor must be a number"; return false; }
+  ArrayObj* src = as_arr(a[0]);
+  for (uint32_t i = 0; i < src->len; ++i)
+    if (!is_num(src->slots->data[i])) { err = "scale expects numbers"; return false; }
+  uint32_t len = src->len;
+  double k = to_double(a[1]);
+  Value rv;
+  if (!make_array(h, len, rv, err)) return false;  // safepoint
+  ArrayObj* r = static_cast<ArrayObj*>(rv.as.obj);
+  src = as_arr(a[0]);  // re-read after the alloc
+  for (uint32_t i = 0; i < len; ++i) r->slots->data[i] = Value::number(to_double(src->slots->data[i]) * k);
+  out = rv;
+  return true;
+}
+
+bool normalize_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "normalize expects an array"; return false; }
+  ArrayObj* src = as_arr(a[0]);
+  double total = 0;
+  for (uint32_t i = 0; i < src->len; ++i) {
+    if (!is_num(src->slots->data[i])) { err = "normalize expects numbers"; return false; }
+    total += to_double(src->slots->data[i]);
+  }
+  if (total == 0.0) { err = "normalize of a zero-sum array"; return false; }
+  uint32_t len = src->len;
+  Value rv;
+  if (!make_array(h, len, rv, err)) return false;  // safepoint
+  ArrayObj* r = static_cast<ArrayObj*>(rv.as.obj);
+  src = as_arr(a[0]);  // re-read after the alloc
+  for (uint32_t i = 0; i < len; ++i) r->slots->data[i] = Value::number(to_double(src->slots->data[i]) / total);
+  out = rv;
+  return true;
+}
+
+// clamp_all: clamp every element into [lo, hi], keeping each element's own
+// representation (the element, or the bound it is pinned to).
+bool clamp_all_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "clamp_all expects an array"; return false; }
+  if (!is_num(a[1]) || !is_num(a[2])) { err = "clamp_all bounds must be numbers"; return false; }
+  if (to_double(a[1]) > to_double(a[2])) { err = "clamp_all: lo > hi"; return false; }
+  ArrayObj* src = as_arr(a[0]);
+  for (uint32_t i = 0; i < src->len; ++i)
+    if (!is_num(src->slots->data[i])) { err = "clamp_all expects numbers"; return false; }
+  uint32_t len = src->len;
+  Value rv;
+  if (!make_array(h, len, rv, err)) return false;  // safepoint
+  ArrayObj* r = static_cast<ArrayObj*>(rv.as.obj);
+  src = as_arr(a[0]);  // re-read after the alloc
+  Value lo = a[1], hi = a[2];  // re-read bounds from registers after the alloc
+  double lod = to_double(lo), hid = to_double(hi);
+  for (uint32_t i = 0; i < len; ++i) {
+    const Value& e = src->slots->data[i];
+    double d = to_double(e);
+    r->slots->data[i] = (d < lod) ? lo : (d > hid) ? hi : e;
+  }
+  out = rv;
+  return true;
+}
+
+// --- map ---
+
+// from_keys(keys, value): a map mapping each (string) key to the same value.
+bool from_keys_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "from_keys expects a key array"; return false; }
+  ArrayObj* ks0 = as_arr(a[0]);
+  for (uint32_t i = 0; i < ks0->len; ++i)
+    if (!is_str(ks0->slots->data[i])) { err = "from_keys keys must be strings"; return false; }
+  Value rv;
+  if (!make_map(h, rv, err)) return false;  // safepoint
+  HandleScope hs(h);
+  size_t mi = hs.root(rv.as.obj);
+  uint32_t n = as_arr(a[0])->len;
+  for (uint32_t i = 0; i < n; ++i) {
+    ArrayObj* ks = as_arr(a[0]);  // re-read key array
+    StringObj* kobj = static_cast<StringObj*>(ks->slots->data[i].as.obj);
+    std::string key(kobj->bytes->data, kobj->len);
+    Value val = a[1];             // re-read value register
+    MapObj* nm = hs.get<MapObj>(mi);
+    map_put(nm, key.data(), static_cast<uint32_t>(key.size()), val, h);  // allocates
+    if (h.over_cap()) { err = "out of memory"; return false; }
+  }
+  out = Value::object(hs.get<MapObj>(mi));
+  return true;
+}
+
+// key_of(m, value): the first key whose value equals `value`, or nil.
+bool key_of_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_map(a[0])) { err = "key_of expects a map"; return false; }
+  MapObj* m = as_map(a[0]);
+  for (uint32_t i = 0; i < m->len; ++i)
+    if (val_equal(m->vals->data[i], a[1])) { out = m->keys->data[i]; return true; }
+  out = Value::nil();
+  return true;
+}
+
+// defaults(m, fallback): m's entries win; fallback fills in any missing keys.
+bool defaults_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_map(a[0]) || !is_map(a[1])) { err = "defaults expects two maps"; return false; }
+  Value rv;
+  if (!make_map(h, rv, err)) return false;  // safepoint
+  HandleScope hs(h);
+  size_t mi = hs.root(rv.as.obj);
+  // Insert the fallback first, then the primary, so the primary overrides.
+  for (int src = 1; src >= 0; --src) {
+    uint32_t len = as_map(a[src])->len;
+    for (uint32_t i = 0; i < len; ++i) {
+      MapObj* sm = as_map(a[src]);  // re-read source
+      StringObj* ks = static_cast<StringObj*>(sm->keys->data[i].as.obj);
+      std::string key(ks->bytes->data, ks->len);
+      Value val = sm->vals->data[i];
+      MapObj* nm = hs.get<MapObj>(mi);
+      map_put(nm, key.data(), static_cast<uint32_t>(key.size()), val, h);  // allocates
+      if (h.over_cap()) { err = "out of memory"; return false; }
+    }
+  }
+  out = Value::object(hs.get<MapObj>(mi));
+  return true;
+}
+
+// =======================================================================
 // Registry
 // =======================================================================
 
@@ -2339,6 +2922,36 @@ const NativeEntry kNatives[] = {
     // conversion / predicate
     {"hex", 1, 1, hex_fn},             {"bin", 1, 1, bin_fn},
     {"is_function", 1, 1, is_function_fn},
+
+    // --- batch 5 ---
+    // math: integer / rounding
+    {"is_even", 1, 1, is_even_fn},     {"is_odd", 1, 1, is_odd_fn},
+    {"floor_div", 2, 2, floor_div_fn}, {"pow_mod", 3, 3, pow_mod_fn},
+    {"round_to", 2, 2, round_to_fn},
+    // math: statistics
+    {"variance", 1, 1, variance_fn},   {"stddev", 1, 1, stddev_fn},
+    {"median", 1, 1, median_fn},       {"mode", 1, 1, mode_fn},
+    // math: special functions
+    {"gamma", 1, 1, gamma_fn},         {"lgamma", 1, 1, lgamma_fn},
+    {"erf", 1, 1, erf_fn},             {"erfc", 1, 1, erfc_fn},
+    {"fdim", 2, 2, fdim_fn},           {"fma", 3, 3, fma_fn},
+    {"frexp", 1, 1, frexp_fn},         {"modf", 1, 1, modf_fn},
+    // string
+    {"partition", 2, 2, partition_fn}, {"index_from", 3, 3, index_from_fn},
+    {"is_palindrome", 1, 1, is_palindrome_fn},
+    {"common_prefix", 2, 2, common_prefix_fn}, {"common_suffix", 2, 2, common_suffix_fn},
+    {"levenshtein", 2, 2, levenshtein_fn}, {"hamming", 2, 2, hamming_fn},
+    {"caesar", 2, 2, caesar_fn},       {"from_bytes", 1, 1, from_bytes_fn},
+    {"ascii_sum", 1, 1, ascii_sum_fn},
+    // array
+    {"argsort", 1, 1, argsort_fn},     {"swap", 3, 3, swap_fn},
+    {"unzip", 1, 1, unzip_fn},         {"diff", 1, 1, diff_fn},
+    {"running_max", 1, 1, running_max_fn}, {"running_min", 1, 1, running_min_fn},
+    {"linspace", 3, 3, linspace_fn},   {"scale", 2, 2, scale_fn},
+    {"normalize", 1, 1, normalize_fn}, {"clamp_all", 3, 3, clamp_all_fn},
+    // map
+    {"from_keys", 2, 2, from_keys_fn}, {"key_of", 2, 2, key_of_fn},
+    {"defaults", 2, 2, defaults_fn},
 };
 
 constexpr size_t kNativeCount = sizeof(kNatives) / sizeof(kNatives[0]);

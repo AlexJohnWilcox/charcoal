@@ -463,4 +463,109 @@ void test_native() {
     CHECK(r.ok);
     CHECK(r.output == "5");
   }
+
+  // ===================== batch 5 =====================
+
+  // math: integer / rounding
+  OUT("print is_even(4);", "true");
+  OUT("print is_odd(4);", "false");
+  OUT("print floor_div(7, 2);", "3");
+  OUT("print floor_div(0 - 7, 2);", "-4");      // rounds toward -inf
+  OUT("print floor_div(7, 0 - 2);", "-4");
+  ERRS("print floor_div(5, 0);");
+  OUT("print pow_mod(2, 10, 1000);", "24");      // 1024 mod 1000
+  OUT("print pow_mod(3, 0, 7);", "1");
+  ERRS("print pow_mod(2, 0 - 1, 5);");           // negative exponent
+  ERRS("print pow_mod(2, 3, 0);");               // non-positive modulus
+  OUT("print round_to(3.14159, 2) == 3.14;", "true");
+
+  // math: statistics
+  OUT("print variance([5, 5, 5]) == 0.0;", "true");
+  OUT("print stddev([5, 5, 5]) == 0.0;", "true");
+  OUT("print median([1, 3, 2]) == 2.0;", "true");
+  OUT("print median([1, 2, 3, 4]) == 2.5;", "true");
+  OUT("print mode([1, 2, 2, 3]) == 2.0;", "true");
+  ERRS("print variance([]);");
+
+  // math: special functions
+  OUT("print gamma(5.0) == 24.0;", "true");      // 4!
+  OUT("print round(lgamma(1.0));", "0");
+  OUT("print round(erf(0.0));", "0");
+  OUT("print round(erfc(0.0));", "1");
+  OUT("print fdim(5.0, 3.0) == 2.0;", "true");
+  OUT("print fdim(3.0, 5.0) == 0.0;", "true");
+  OUT("print fma(2.0, 3.0, 4.0) == 10.0;", "true");
+  OUT("a = frexp(8.0); print a[1];", "4");        // 8 = 0.5 * 2^4
+  OUT("a = frexp(8.0); print a[0] == 0.5;", "true");
+  OUT("a = modf(3.5); print a[0] == 3.0;", "true");
+  OUT("a = modf(3.5); print a[1] == 0.5;", "true");
+
+  // string
+  OUT("a = partition(\"a-b-c\", \"-\"); print a[0];", "a");
+  OUT("a = partition(\"a-b-c\", \"-\"); print a[2];", "b-c");
+  OUT("a = partition(\"abc\", \"-\"); print a[0];", "abc");   // no separator
+  OUT("a = partition(\"abc\", \"-\"); print len(a);", "3");
+  OUT("print index_from(\"abcabc\", \"bc\", 2);", "4");
+  OUT("print index_from(\"abc\", \"x\", 0);", "-1");
+  OUT("print is_palindrome(\"racecar\");", "true");
+  OUT("print is_palindrome(\"abc\");", "false");
+  OUT("print is_palindrome(\"\");", "true");
+  OUT("print common_prefix(\"foobar\", \"foobaz\");", "fooba");
+  OUT("print common_prefix(\"abc\", \"xyz\");", "");
+  OUT("print common_suffix(\"running\", \"jumping\");", "ing");
+  OUT("print levenshtein(\"kitten\", \"sitting\");", "3");
+  OUT("print levenshtein(\"abc\", \"abc\");", "0");
+  OUT("print hamming(\"karolin\", \"kathrin\");", "3");
+  ERRS("print hamming(\"ab\", \"abc\");");        // unequal length
+  OUT("print caesar(\"abc\", 13);", "nop");       // == rot13 for this input
+  OUT("print from_bytes([65, 66, 67]);", "ABC");
+  OUT("print from_bytes(to_bytes(\"Hi\"));", "Hi");  // round trip
+  ERRS("print from_bytes([256]);");               // out of byte range
+  OUT("print ascii_sum(\"AB\");", "131");          // 65 + 66
+
+  // array
+  OUT("a = argsort([3, 1, 2]); print a[0];", "1");   // smallest value at index 1
+  OUT("a = argsort([3, 1, 2]); print a[2];", "0");
+  OUT("a = [1, 2, 3]; swap(a, 0, 2); print a[0];", "3");
+  ERRS("a = [1]; swap(a, 0, 5);");
+  OUT("a = unzip([[1, 4], [2, 5], [3, 6]]); print a[0][2];", "3");
+  OUT("a = unzip([[1, 4], [2, 5], [3, 6]]); print a[1][0];", "4");
+  OUT("a = diff([1, 3, 6, 10]); print a[2];", "4");
+  OUT("print len(diff([1, 2, 3]));", "2");
+  OUT("a = running_max([1, 3, 2, 5, 4]); print a[2];", "3");
+  OUT("a = running_min([5, 3, 4, 1, 2]); print a[4];", "1");
+  OUT("a = linspace(0.0, 10.0, 5); print a[2] == 5.0;", "true");
+  OUT("a = scale([1, 2, 3], 2.0); print a[2] == 6.0;", "true");
+  OUT("a = normalize([1, 1, 2]); print a[2] == 0.5;", "true");
+  ERRS("print normalize([0, 0]);");
+  OUT("a = clamp_all([0 - 5, 3, 20], 0, 10); print a[0];", "0");
+  OUT("a = clamp_all([0 - 5, 3, 20], 0, 10); print a[2];", "10");
+
+  // map
+  OUT("m = from_keys([\"a\", \"b\"], 0); print get(m, \"a\");", "0");
+  OUT("m = from_keys([\"a\", \"b\"], 0); print len(m);", "2");
+  OUT("m = {\"a\"=1, \"b\"=2}; print key_of(m, 2);", "b");
+  OUT("m = {\"a\"=1, \"b\"=2}; print key_of(m, 9);", "nil");
+  OUT("r = defaults({\"a\"=1}, {\"a\"=9, \"b\"=2}); print get(r, \"a\");", "1");  // primary wins
+  OUT("r = defaults({\"a\"=1}, {\"a\"=9, \"b\"=2}); print get(r, \"b\");", "2");  // fallback fills
+
+  // GC pressure across batch-5 multi-alloc builtins (partition + unzip + maps).
+  {
+    const char* src =
+        "p = partition(\"left-right\", \"-\");"
+        "u = unzip([[1, 10], [2, 20], [3, 30]]);"
+        "fk = from_keys([\"x\", \"y\", \"z\"], 7);"
+        "df = defaults({\"a\"=1}, {\"a\"=9, \"b\"=2});"
+        "i = 200;"
+        "while (i) { junk = [0, 0, 0, 0, 0]; i = i - 1; }"
+        "print len(p) + u[1][2] + get(fk, \"z\") + get(df, \"a\");";  // 3 + 30 + 7 + 1 = 41
+    auto l = lex(src, std::strlen(src));
+    auto p = parse(l.tokens);
+    auto c = compile(p.program);
+    CHECK(c.ok);
+    Heap h(48 * 1024);
+    auto r = run(c.module, h, Limits{});
+    CHECK(r.ok);
+    CHECK(r.output == "41");
+  }
 }
