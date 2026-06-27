@@ -20,7 +20,8 @@ struct Frame {
   uint32_t           func_idx;
   size_t             pc = 0;
   std::vector<Value> regs;
-  int                result_reg = 0;  // register in the caller to receive RET
+  int                result_reg = 0;        // register in the caller to receive RET
+  ClosureObj*        closure = nullptr;      // the closure being executed (for upvalues)
 };
 
 // Well-defined wrapping integer arithmetic (signed overflow is UB; do the math
@@ -74,7 +75,8 @@ std::string render(const Value& v) {
         }
         case ObjKind::Array:    return "[array]";
         case ObjKind::Map:      return "[object]";
-        case ObjKind::Function: return "[fn]";
+        case ObjKind::Function:
+        case ObjKind::Closure:  return "[fn]";
         case ObjKind::Bytes:
         case ObjKind::Slots:    return "[internal]";  // never user-visible
       }
@@ -159,9 +161,12 @@ RunResult run(const Module& m, Heap& h, Limits limits) {
   // every collection (which can only happen inside a new_* call below) sees the
   // live stack and forwards every object register in place.
   h.set_root_enumerator([&frames](GcVisitor& v) {
-    for (Frame& f : frames)
-      for (Value& r : f.regs)
-        v.visit(r);
+    for (Frame& f : frames) {
+      for (Value& r : f.regs) v.visit(r);
+      // A frame mid-call may be executing a closure; keep it (and its upvalues)
+      // alive and update the frame's pointer if the collector moves it.
+      if (f.closure) f.closure = static_cast<ClosureObj*>(v.heap->copy(f.closure));
+    }
   });
 
   auto push_frame = [&](uint32_t idx, int result_reg) {
@@ -542,6 +547,62 @@ RunResult run(const Module& m, Heap& h, Limits limits) {
         if (h.over_cap()) { res.error = "out of memory"; break; }
         fr.pc += 5;
         break;
+      }
+
+      case OP_CLOSURE: {
+        int r = u8at(1);
+        uint16_t kfunc = u16at(2);
+        int nup = u8at(4);
+        ClosureObj* c = h.new_closure(kfunc, static_cast<uint32_t>(nup));  // SAFEPOINT
+        if (!c || h.over_cap()) { res.error = "out of memory"; break; }
+        // `c` is freshly allocated; the source registers are GC roots that the
+        // collection inside new_closure already forwarded. No allocation happens
+        // below, so nothing goes stale.
+        for (int i = 0; i < nup; ++i) {
+          int src = u8at(5 + i);
+          c->upvalues->data[i] = fr.regs[src];  // capture by value
+        }
+        fr.regs[r] = Value::object(c);
+        fr.pc += 5 + nup;
+        break;
+      }
+
+      case OP_GET_UPVAL: {
+        int r = u8at(1);
+        int idx = u8at(2);
+        if (!fr.closure || idx >= static_cast<int>(fr.closure->upvalues->count)) {
+          res.error = "bad upvalue access"; break;  // hostile bytecode defense
+        }
+        fr.regs[r] = fr.closure->upvalues->data[idx];
+        fr.pc += 3;
+        break;
+      }
+
+      case OP_CALL_VALUE: {
+        int base = u8at(1);
+        int n = u8at(2);
+        Value callee = fr.regs[base];
+        if (callee.tag != Tag::Obj || !callee.as.obj || callee.as.obj->kind != ObjKind::Closure) {
+          res.error = "call of non-function"; break;
+        }
+        ClosureObj* cl = static_cast<ClosureObj*>(callee.as.obj);
+        uint32_t callee_fn = cl->func_index;
+        if (callee_fn >= m.funcs.size()) { res.error = "bad closure target"; break; }
+        if (frames.size() >= limits.max_depth) { res.error = "call depth exceeded"; break; }
+
+        uint8_t np = m.funcs[callee_fn].num_params;
+        size_t caller = frames.size() - 1;
+        Frame cf;
+        cf.func_idx = callee_fn;
+        cf.result_reg = base;
+        cf.closure = cl;
+        cf.regs.assign(m.funcs[callee_fn].num_regs, Value::nil());
+        for (int i = 0; i < np; ++i)
+          if (i < n) cf.regs[i] = frames[caller].regs[base + 1 + i];  // args follow the callee
+
+        frames[caller].pc += 3;
+        frames.push_back(std::move(cf));
+        continue;  // re-grab the new top frame
       }
 
       case OP_RET: {

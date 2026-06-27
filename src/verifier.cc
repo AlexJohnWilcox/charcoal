@@ -80,6 +80,10 @@ bool operands_of(uint8_t op, std::vector<Operand>& ops) {
     case OP_CALL_NATIVE:
       ops = {Operand::Reg, Operand::ConstStr, Operand::Count};
       break;
+    case OP_GET_UPVAL:
+    case OP_CALL_VALUE:
+      ops = {Operand::Reg, Operand::Count};
+      break;
     case OP_JUMP:
       ops = {Operand::Jump};
       break;
@@ -124,6 +128,23 @@ VerifyResult verify_fn(const Module& m, const Function& f) {
   while (pc < len) {
     is_start[pc] = true;
     uint8_t op = code[pc];
+
+    // OP_CLOSURE is variable length: op, r, kfunc(u16), n(u8), then n reg bytes.
+    // It is the one opcode the fixed operand table can't describe.
+    if (op == OP_CLOSURE) {
+      if (pc + 5 > len) return err("truncated instruction");  // op + r + kfunc(2) + n
+      if (code[pc + 1] >= f.num_regs) return err("register operand out of range");
+      uint16_t kfunc = static_cast<uint16_t>(code[pc + 2] | (code[pc + 3] << 8));
+      if (kfunc >= m.funcs.size()) return err("closure function index out of range");
+      uint8_t nup = code[pc + 4];
+      size_t total = 5 + static_cast<size_t>(nup);
+      if (pc + total > len) return err("truncated instruction");
+      for (uint8_t i = 0; i < nup; ++i)
+        if (code[pc + 5 + i] >= f.num_regs) return err("register operand out of range");
+      pc += total;
+      continue;
+    }
+
     if (!operands_of(op, ops)) return err("unknown opcode");
 
     size_t nops = 0;
@@ -135,7 +156,7 @@ VerifyResult verify_fn(const Module& m, const Function& f) {
     size_t at = pc + 1;
     // For CALL/CALL_NATIVE we need the base register and count together for the
     // window check.
-    bool is_call = (op == OP_CALL || op == OP_CALL_NATIVE);
+    bool is_call = (op == OP_CALL || op == OP_CALL_NATIVE || op == OP_CALL_VALUE);
     int call_base = -1, call_n = -1;
     for (Operand o : ops) {
       switch (o) {
@@ -168,9 +189,12 @@ VerifyResult verify_fn(const Module& m, const Function& f) {
       at += width(o);
     }
 
-    // CALL/CALL_NATIVE: the argument window [base, base+n) must fit the regs.
+    // The argument window must fit the register file. For CALL/CALL_NATIVE the
+    // args start at base; for CALL_VALUE the callee is at base and args follow,
+    // so the window is one wider.
     if (is_call) {
-      if (call_base + call_n > f.num_regs) return err("call register window out of range");
+      int window = call_base + call_n + (op == OP_CALL_VALUE ? 1 : 0);
+      if (window > f.num_regs) return err("call register window out of range");
     }
 
     pc += 1 + nops;

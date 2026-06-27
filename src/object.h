@@ -6,7 +6,7 @@ namespace coal {
 
 class Heap;  // for GcVisitor
 
-enum class ObjKind : uint8_t { String, Array, Map, Function, Bytes, Slots };
+enum class ObjKind : uint8_t { String, Array, Map, Function, Bytes, Slots, Closure };
 
 // Common object header. `fwd` is GC scratch used ONLY during a collection: on
 // the old copy of an object it points at the new copy (nullptr = not yet
@@ -52,6 +52,13 @@ struct MapObj : Object {
 
 struct FunctionObj : Object {
   uint32_t func_index;  // index into Module::funcs
+};
+
+// A first-class function value: a proto (func_index) plus its captured upvalues.
+// Capture is by VALUE — `upvalues` holds copies taken at closure-creation time.
+struct ClosureObj : Object {
+  uint32_t  func_index;  // index into Module::funcs (the proto)
+  SlotsObj* upvalues;    // captured values; a 0-length Slots if none
 };
 
 // Passed to a Heap's root enumerator. `visit` forwards a root Value in place: if

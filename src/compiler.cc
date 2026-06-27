@@ -36,6 +36,15 @@ struct Compiler {
   };
   std::vector<LoopCtx> loops;
 
+  // Closure support. `enclosing_` holds the locals tables of the lexically
+  // enclosing functions (for one-level upvalue capture: only .back() is used).
+  // `upvals_`/`upval_src_` accumulate the CURRENT function's captured names and,
+  // in parent-register terms, where each is copied from at OP_CLOSURE time.
+  std::vector<const std::unordered_map<std::string, int>*> enclosing_;
+  std::vector<std::string> upvals_;
+  std::vector<int>         upval_src_;
+  std::unordered_map<const Node*, int> lambda_func_;  // Lambda node -> funcs index
+
   int cur_line = 0;  // source line of the node currently being compiled
 
   void fail(const std::string& msg) {
@@ -109,6 +118,74 @@ struct Compiler {
 
   // --- expression codegen ------------------------------------------------
 
+  // Resolve `name` as an upvalue captured from the IMMEDIATE enclosing function.
+  // Returns the upvalue index (adding it if new) or -1 if not a parent local.
+  // One-level capture only: a reference needing a grandparent is not found here
+  // and surfaces as "undefined variable" rather than being miscompiled.
+  int find_or_add_upvalue(const std::string& name) {
+    if (enclosing_.empty()) return -1;
+    for (size_t i = 0; i < upvals_.size(); ++i)
+      if (upvals_[i] == name) return static_cast<int>(i);
+    const auto* parent = enclosing_.back();
+    auto pit = parent->find(name);
+    if (pit == parent->end()) return -1;
+    int idx = static_cast<int>(upvals_.size());
+    if (idx > kMaxCount) { fail("too many upvalues"); return -1; }
+    upvals_.push_back(name);
+    upval_src_.push_back(pit->second);  // parent register supplying the capture
+    return idx;
+  }
+
+  // Compile a lambda body into its own (pre-indexed) function, then emit the
+  // OP_CLOSURE that builds the closure value in `dst` within the parent. The
+  // parent's per-function compiler state is saved across the nested compile and
+  // restored before the OP_CLOSURE is emitted into the parent's code.
+  void compile_lambda(const Node* lam, int dst) {
+    auto it = lambda_func_.find(lam);
+    if (it == lambda_func_.end()) { fail("internal: lambda not indexed"); return; }
+    uint32_t fidx = static_cast<uint32_t>(it->second);
+    if (fidx > 65535) { fail("too many functions"); return; }
+
+    // Save the parent function's state.
+    std::vector<uint8_t>* save_code = code;
+    std::unordered_map<std::string, int> save_locals = std::move(locals);
+    std::vector<LoopCtx> save_loops = std::move(loops);
+    int save_reg = reg_top, save_hw = high_water, save_line = cur_line;
+    std::vector<std::string> save_upvals = std::move(upvals_);
+    std::vector<int> save_upsrc = std::move(upval_src_);
+
+    // The lambda captures one level up: from `save_locals` (the parent).
+    enclosing_.push_back(&save_locals);
+    upvals_.clear();
+    upval_src_.clear();
+
+    std::vector<const Node*> body{lam->kids[0]};
+    compile_body(m.funcs[fidx], body, lam->params, /*is_main=*/false);
+
+    std::vector<int> captured = upval_src_;  // parent registers to capture, in order
+    int n_up = static_cast<int>(captured.size());
+
+    // Restore the parent function's state.
+    enclosing_.pop_back();
+    code = save_code;
+    locals = std::move(save_locals);
+    loops = std::move(save_loops);
+    reg_top = save_reg;
+    high_water = save_hw;
+    cur_line = save_line;
+    upvals_ = std::move(save_upvals);
+    upval_src_ = std::move(save_upsrc);
+
+    if (failed()) return;
+
+    // Build the closure in the parent: OP_CLOSURE dst, fidx, n, [src regs...].
+    emit(OP_CLOSURE);
+    emit_r(dst);
+    emit_k(static_cast<int>(fidx));  // u16 function index (into Module::funcs)
+    emit_n(n_up);
+    for (int s : captured) emit_r(s);
+  }
+
   void compile_expr(const Node* n, int dst) {
     if (failed()) return;
     if (n->line > 0) cur_line = n->line;
@@ -130,10 +207,29 @@ struct Compiler {
         break;
       case NodeKind::Ident: {
         auto it = locals.find(n->str);
-        if (it == locals.end()) { fail("undefined variable: " + n->str); return; }
-        if (dst != it->second) { emit(OP_MOVE); emit_r(dst); emit_r(it->second); }
-        break;
+        if (it != locals.end()) {  // a local of this function
+          if (dst != it->second) { emit(OP_MOVE); emit_r(dst); emit_r(it->second); }
+          break;
+        }
+        int uidx = find_or_add_upvalue(n->str);  // captured from the parent?
+        if (failed()) return;
+        if (uidx >= 0) {
+          emit(OP_GET_UPVAL); emit_r(dst); emit_n(uidx);
+          break;
+        }
+        auto fit = func_index.find(n->str);  // a named function used as a value
+        if (fit != func_index.end()) {
+          if (fit->second > 65535) { fail("too many functions"); return; }
+          emit(OP_CLOSURE); emit_r(dst); emit_k(fit->second); emit_n(0);  // 0-upvalue closure
+          break;
+        }
+        if (find_native(n->str)) { fail("builtin '" + n->str + "' is not a value"); return; }
+        fail("undefined variable: " + n->str);
+        return;
       }
+      case NodeKind::Lambda:
+        compile_lambda(n, dst);
+        break;
       case NodeKind::Binary: {
         int save = reg_top;
         int t1 = reg_top, t2 = reg_top + 1;
@@ -268,7 +364,38 @@ struct Compiler {
         break;
       }
       case NodeKind::Call: {
-        // `push(array, value)` is a reserved builtin (wins over any user fn).
+        int count = static_cast<int>(n->kids.size());
+        if (count > kMaxCount) { fail("too many arguments"); return; }
+
+        // Resolution order: function VALUE (local/upvalue) -> push -> builtin ->
+        // named function -> error. A local or captured callee is a closure value
+        // we evaluate and invoke with OP_CALL_VALUE.
+        bool callee_local = (locals.find(n->str) != locals.end());
+        int callee_upval = -1;
+        if (!callee_local) {
+          callee_upval = find_or_add_upvalue(n->str);
+          if (failed()) return;
+        }
+        if (callee_local || callee_upval >= 0) {
+          int base = reg_top;
+          reg_top = base + 1; use(reg_top);
+          if (callee_local) {
+            emit(OP_MOVE); emit_r(base); emit_r(locals[n->str]);
+          } else {
+            emit(OP_GET_UPVAL); emit_r(base); emit_n(callee_upval);
+          }
+          for (int a = 0; a < count; ++a) {  // args follow the callee at base+1..
+            reg_top = base + 1 + a + 1; use(reg_top);
+            compile_expr(n->kids[a], base + 1 + a);
+          }
+          use(base + 1 + count);
+          emit(OP_CALL_VALUE); emit_r(base); emit_n(count);
+          reg_top = base;
+          if (dst != base) { emit(OP_MOVE); emit_r(dst); emit_r(base); }
+          break;
+        }
+
+        // `push(array, value)` is a reserved builtin.
         if (n->str == "push") {
           if (n->kids.size() != 2) { fail("push expects (array, value)"); return; }
           int save = reg_top;
@@ -281,10 +408,6 @@ struct Compiler {
           emit(OP_LOAD_NIL); emit_r(dst);  // push evaluates to nil
           break;
         }
-
-        // Resolution order: push (above) -> builtin -> user function -> error.
-        int count = static_cast<int>(n->kids.size());
-        if (count > kMaxCount) { fail("too many arguments"); return; }
         const NativeEntry* native = find_native(n->str);
         bool is_native = (native != nullptr);
         if (!is_native && func_index.find(n->str) == func_index.end()) {
@@ -472,7 +595,8 @@ struct Compiler {
   // registers so temporaries above reg_top never clobber a live variable.
   void collect_locals(const Node* n, std::unordered_set<std::string>& seen,
                       std::vector<std::string>& out) {
-    if (!n || n->kind == NodeKind::FnDecl) return;  // no nested functions in M1
+    // Don't descend into nested function bodies — their locals are their own.
+    if (!n || n->kind == NodeKind::FnDecl || n->kind == NodeKind::Lambda) return;
     if (n->kind == NodeKind::Assign && !n->kids.empty() &&
         n->kids[0]->kind == NodeKind::Ident) {
       const std::string& nm = n->kids[0]->str;
@@ -486,6 +610,8 @@ struct Compiler {
     code = &f.code;
     locals.clear();
     loops.clear();
+    upvals_.clear();
+    upval_src_.clear();
     reg_top = 0;
     high_water = 0;
 
@@ -520,6 +646,21 @@ struct Compiler {
 
   // --- driver ------------------------------------------------------------
 
+  // Assign a function slot to every Lambda node anywhere in the tree. Done in
+  // pass 1 so `m.funcs` never reallocates during (re-entrant) pass-2 compilation,
+  // which would invalidate the `code`/Function& references held mid-compile.
+  void index_lambdas(const Node* n) {
+    if (!n) return;
+    if (n->kind == NodeKind::Lambda) {
+      Function f;
+      f.name_const = static_cast<uint32_t>(k_str("<lambda>"));
+      f.num_params = static_cast<uint8_t>(n->params.size());
+      lambda_func_[n] = static_cast<int>(m.funcs.size());
+      m.funcs.push_back(f);
+    }
+    for (const Node* k : n->kids) index_lambdas(k);
+  }
+
   void run(const Node* program) {
     // Pass 1: index every function so calls resolve forward references.
     m.entry_func = 0;
@@ -537,6 +678,10 @@ struct Compiler {
       func_index[s->str] = static_cast<int>(m.funcs.size());
       m.funcs.push_back(f);
     }
+
+    // Pre-allocate function slots for every lambda (in main, in top-level fns,
+    // and nested in other lambdas) before any body is compiled.
+    index_lambdas(program);
 
     // Pass 2: compile bodies. main = top-level non-FnDecl statements.
     std::vector<const Node*> main_stmts;

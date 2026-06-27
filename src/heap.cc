@@ -34,6 +34,7 @@ size_t size_of(const Object* o) {
     case ObjKind::Array:    return sizeof(ArrayObj);
     case ObjKind::Map:      return sizeof(MapObj);
     case ObjKind::Function: return sizeof(FunctionObj);
+    case ObjKind::Closure:  return sizeof(ClosureObj);
   }
   return sizeof(Object);
 }
@@ -114,6 +115,11 @@ void Heap::trace(Object* o) {
       }
       break;
     }
+    case ObjKind::Closure: {
+      ClosureObj* c = static_cast<ClosureObj*>(o);
+      c->upvalues = static_cast<SlotsObj*>(copy(c->upvalues));  // upvalue values traced via the Slots
+      break;
+    }
     case ObjKind::Bytes:
     case ObjKind::Function:
       break;  // no outgoing references
@@ -177,6 +183,23 @@ ArrayObj* Heap::new_array(uint32_t len) {
   a->cap = len;
   a->slots = hs.get<SlotsObj>(si);    // re-read the (possibly moved) slots
   return a;
+}
+
+ClosureObj* Heap::new_closure(uint32_t func_index, uint32_t n_upvals) {
+  SlotsObj* s = new_slots(n_upvals);  // alloc #1: upvalue slots, nil-initialized
+  if (!s) return nullptr;
+
+  HandleScope hs(*this);
+  size_t si = hs.root(s);                // protect s across alloc #2
+  void* mem = bump(sizeof(ClosureObj));  // may collect & move s
+  if (!mem) return nullptr;
+
+  ClosureObj* c = static_cast<ClosureObj*>(mem);
+  c->kind = ObjKind::Closure;
+  c->fwd = nullptr;
+  c->func_index = func_index;
+  c->upvalues = hs.get<SlotsObj>(si);    // re-read the (possibly moved) slots
+  return c;
 }
 
 MapObj* Heap::new_map() {

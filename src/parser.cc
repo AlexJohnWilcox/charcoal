@@ -159,10 +159,33 @@ struct Parser {
       }
       case Tok::LBracket: return array_lit();
       case Tok::LBrace:   return map_lit();
+      case Tok::KwFn:     return lambda_expr();  // fn(params){body} as a value
       default:
         fail("expected expression");
         return nullptr;
     }
+  }
+
+  // fn ( params ) block  — an unnamed function expression. The leading `fn` has
+  // not been consumed. (A `fn name(...)` at statement level stays a FnDecl.)
+  Node* lambda_expr() {
+    advance();  // fn
+    if (!expect(Tok::LParen, "expected '(' in lambda")) return nullptr;
+    std::vector<std::string> params;
+    if (!check(Tok::RParen)) {
+      do {
+        if (!check(Tok::Ident)) { fail("expected parameter name"); return nullptr; }
+        params.emplace_back(peek().start, peek().len);
+        advance();
+      } while (match(Tok::Comma));
+    }
+    if (!expect(Tok::RParen, "expected ')'")) return nullptr;
+    Node* body = block();
+    if (!body || failed()) return nullptr;
+    Node* n = make(NodeKind::Lambda);
+    n->params = std::move(params);
+    n->kids = {body};
+    return n;
   }
 
   Node* array_lit() {
@@ -473,7 +496,14 @@ struct Parser {
       default: {
         Node* e = assignment();
         if (!e || failed()) return nullptr;
-        if (!expect(Tok::Semicolon, "expected ';'")) return nullptr;
+        // The terminating ';' is optional when the statement ends in a block
+        // ('}'), e.g. `g = fn(x) { ... }` — like a function declaration.
+        if (check(Tok::Semicolon)) {
+          advance();
+        } else if (!(pos > 0 && toks[pos - 1].kind == Tok::RBrace)) {
+          fail("expected ';'");
+          return nullptr;
+        }
         if (e->kind == NodeKind::Assign) return e;
         Node* n = make(NodeKind::ExprStmt);
         n->kids = {e};

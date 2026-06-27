@@ -68,6 +68,9 @@ enum Op : uint8_t {
   OP_NEG        = 0x60,  // r, r2   (-x)
   OP_NOT        = 0x61,  // r, r2   (!x)
   OP_BNOT       = 0x62,  // r, r2   (~x)
+  OP_CLOSURE    = 0x63,  // r_dst, kfunc(u16), n(u8), then n reg bytes  (VARIABLE LENGTH)
+  OP_GET_UPVAL  = 0x64,  // r_dst, idx(u8)
+  OP_CALL_VALUE = 0x65,  // base(u8), n(u8)  : call closure in reg[base] with n args
 };
 
 // Serialize to the .cbc v1 binary format (implemented in Task 5).

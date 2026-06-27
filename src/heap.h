@@ -31,6 +31,10 @@ class Heap {
   SlotsObj*    new_slots(uint32_t count);            // all slots initialized to nil
   BytesObj*    new_bytes(const char* p, uint32_t n); // copies n bytes
 
+  // A closure over `n_upvals` captured values (initialized to nil; the caller
+  // fills them in by value). Allocates the upvalue Slots first, then the closure.
+  ClosureObj*  new_closure(uint32_t func_index, uint32_t n_upvals);
+
   size_t bytes_used() const;
   bool   over_cap() const;   // callers must check and raise (not crash) when true
 

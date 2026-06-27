@@ -5,6 +5,8 @@
 #include "parser.h"
 #include "test_main.h"
 
+#include <cstring>
+
 using namespace coal;
 
 static RunResult run_src(const char* s, size_t n) {
@@ -115,4 +117,43 @@ void test_interp() {
     CHECK(r.ok); CHECK(r.output == "3"); }    // inner loop breaks after j==0 each time
   { auto r = SRC("break;"); CHECK(!r.ok); }   // break outside loop -> compile error
   { auto r = SRC("continue;"); CHECK(!r.ok); }
+
+  // --- A5 closures / first-class functions ---
+  { auto r = SRC("f = fn(x) { return x + 1; } print f(41);");
+    CHECK(r.ok); CHECK(r.output == "42"); }
+  // capture-by-value: closure keeps the value at creation time
+  { auto r = SRC("a = 10; g = fn(x) { return x + a; } print g(5);");
+    CHECK(r.ok); CHECK(r.output == "15"); }
+  { auto r = SRC("a = 10; g = fn(x) { return x + a; } a = 999; print g(5);");
+    CHECK(r.ok); CHECK(r.output == "15"); }   // captured the old a
+  // pass a function value into a user function that calls it
+  { auto r = SRC("fn apply(fn_val, x) { return fn_val(x); } print apply(fn(y){return y*y;}, 6);");
+    CHECK(r.ok); CHECK(r.output == "36"); }
+  // a top-level function name used as a value
+  { auto r = SRC("fn sq(n) { return n * n; } f = sq; print f(7);");
+    CHECK(r.ok); CHECK(r.output == "49"); }
+  // returning a closure
+  { auto r = SRC("fn adder(n) { return fn(x) { return x + n; }; } add5 = adder(5); print add5(10);");
+    CHECK(r.ok); CHECK(r.output == "15"); }
+  // calling a non-function is a runtime error, not a crash
+  { auto r = SRC("x = 5; print x(1);"); CHECK(!r.ok); }
+
+  // GC pressure: a kept closure and its captured upvalue survive many
+  // collections forced by allocating (and discarding) closures + arrays.
+  {
+    const char* src =
+        "fn adder(n) { return fn(x) { return x + n; }; }"
+        "keep = adder(100);"
+        "i = 300;"
+        "while (i) { junk = adder(i); j2 = [0, 0, 0, 0]; i = i - 1; }"
+        "print keep(5);";   // captured n == 100, so 100 + 5 == 105
+    auto l = lex(src, std::strlen(src));
+    auto p = parse(l.tokens);
+    auto c = compile(p.program);
+    CHECK(c.ok);
+    Heap h(48 * 1024);  // small -> the loop forces collections mid-closure-life
+    auto r = run(c.module, h, Limits{});
+    CHECK(r.ok);
+    CHECK(r.output == "105");
+  }
 }

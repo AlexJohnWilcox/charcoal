@@ -66,6 +66,9 @@ bool op_info(uint8_t op, const char*& name, Opnd ops[4], int& nops) {
     case OP_NEG:          set("NEG", {Opnd::R, Opnd::R}); break;
     case OP_NOT:          set("NOT", {Opnd::R, Opnd::R}); break;
     case OP_BNOT:         set("BNOT", {Opnd::R, Opnd::R}); break;
+    case OP_GET_UPVAL:    set("GET_UPVAL", {Opnd::R, Opnd::N}); break;
+    case OP_CALL_VALUE:   set("CALL_VALUE", {Opnd::R, Opnd::N}); break;
+    // OP_CLOSURE is variable length and handled directly in disassemble_fn.
     default: return false;
   }
   return true;
@@ -126,6 +129,29 @@ void disassemble_fn(const Module& m, const Function& f, uint32_t fi, std::string
   size_t pc = 0;
   while (pc < len) {
     uint8_t op = code[pc];
+
+    // Variable-length CLOSURE: r, kfunc(u16), n, then n source registers.
+    if (op == OP_CLOSURE) {
+      append_hex_offset(out, pc);
+      if (pc + 5 > len) { out += "CLOSURE <truncated>\n"; break; }
+      uint8_t r = code[pc + 1];
+      uint16_t kfunc = static_cast<uint16_t>(code[pc + 2] | (code[pc + 3] << 8));
+      uint8_t nup = code[pc + 4];
+      if (pc + 5 + nup > len) { out += "CLOSURE <truncated>\n"; break; }
+      char buf[48];
+      std::snprintf(buf, sizeof buf, "CLOSURE r%u, fn#%u, [", r, kfunc);
+      out += buf;
+      for (uint8_t i = 0; i < nup; ++i) {
+        if (i) out += ", ";
+        char rb[8];
+        std::snprintf(rb, sizeof rb, "r%u", code[pc + 5 + i]);
+        out += rb;
+      }
+      out += "]\n";
+      pc += 5 + nup;
+      continue;
+    }
+
     const char* name_mn = nullptr;
     Opnd ops[4];
     int nops = 0;

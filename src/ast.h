@@ -9,7 +9,7 @@ namespace coal {
 enum class NodeKind {
   // expressions
   IntLit, FloatLit, StrLit, BoolLit, NilLit, Ident,
-  Binary, Unary, Logical, Assign, Index, Field, Call, ArrayLit, MapLit,
+  Binary, Unary, Logical, Assign, Index, Field, Call, ArrayLit, MapLit, Lambda,
   // statements
   ExprStmt, Print, Return, If, While, For, Break, Continue, Block, FnDecl, Program
 };
@@ -49,6 +49,7 @@ struct Node {
 //   Continue : []
 //   Block    : [stmt0, stmt1, ...]
 //   FnDecl   : [body]   name in str, params in `params`
+//   Lambda   : [body]   params in `params` (an unnamed function expression)
 //   Program  : [stmt-or-fndecl, ...]
 
 struct ParseResult {
