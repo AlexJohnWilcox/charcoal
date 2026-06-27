@@ -18,6 +18,7 @@ void test_gc();
 void test_native();
 void test_disasm();
 void test_astprint();
+void test_optimize();
 
 int main() {
   test_value();
@@ -35,6 +36,7 @@ int main() {
   test_native();
   test_disasm();
   test_astprint();
+  test_optimize();
 
   if (g_failures) {
     std::fprintf(stderr, "%d failure(s)\n", g_failures);

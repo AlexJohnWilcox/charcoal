@@ -4,6 +4,7 @@
 #include "heap.h"
 #include "lexer.h"
 #include "loader.h"
+#include "optimize.h"
 #include "parser.h"
 #include "verifier.h"
 
@@ -16,6 +17,8 @@ bool compile_source(const char* src, size_t n,
 
   auto p = parse(l.tokens);
   if (!p.error.empty() || !p.program) { err = p.error; return false; }
+
+  fold_constants(p.program);  // collapse constant sub-expressions before lowering
 
   auto c = compile(p.program);
   if (!c.ok) { err = c.error; return false; }
