@@ -519,6 +519,36 @@ bool join_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
   return make_string(h, r.data(), static_cast<uint32_t>(r.size()), out, err);
 }
 
+// format_join(arr, sep): join arr's elements with sep, formatting each element
+// the same way to_string() does (so heterogeneous arrays are allowed, unlike
+// join's strings-only rule). We defer per-element formatting to to_string_fn
+// rather than re-implementing render() here.
+bool format_join_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "format_join expects an array"; return false; }
+  if (!is_str(a[1]))   { err = "format_join separator must be a string"; return false; }
+
+  // Both the array and the separator are read across the per-element allocations
+  // below; root them and re-read after each safepoint instead of caching pointers.
+  HandleScope hs(h);
+  size_t ari  = hs.root(a[0].as.obj);
+  size_t sepi = hs.root(a[1].as.obj);
+
+  Value* elems = hs.get<ArrayObj>(ari)->slots->data;  // cache the element buffer
+  std::string acc;
+  uint32_t n = hs.get<ArrayObj>(ari)->len;
+  for (uint32_t i = 0; i < n; ++i) {
+    if (i) {
+      StringObj* sep = hs.get<StringObj>(sepi);
+      acc.append(sep->bytes->data, sep->len);
+    }
+    Value e = elems[i];  // read element from the cached buffer
+    Value rendered;
+    if (!to_string_fn(&e, 1, h, rendered, err)) return false;
+    acc.append(sbytes(rendered), slen(rendered));
+  }
+  return make_string(h, acc.data(), static_cast<uint32_t>(acc.size()), out, err);
+}
+
 // =======================================================================
 // Array
 // =======================================================================
@@ -3554,7 +3584,8 @@ const NativeEntry kNatives[] = {
     {"ends_with", 2, 2, ends_with_fn}, {"upper", 1, 1, upper_fn},
     {"lower", 1, 1, lower_fn},         {"repeat", 2, 2, repeat_fn},
     {"str_concat", 2, 2, str_concat_fn}, {"split", 2, 2, split_fn},
-    {"join", 2, 2, join_fn},           {"trim", 1, 1, trim_fn},
+    {"join", 2, 2, join_fn},           {"format_join", 2, 2, format_join_fn},
+    {"trim", 1, 1, trim_fn},
     {"ord", 1, 1, ord_fn},             {"chr", 1, 1, chr_fn},
     // array
     {"pop", 1, 1, pop_fn},             {"insert", 3, 3, insert_fn},

@@ -70,6 +70,13 @@ void test_native() {
   OUT("print str_concat(\"foo\", \"bar\");", "foobar");
   OUT("print trim(\"  hi  \");", "hi");
   OUT("print join([\"a\", \"b\"], \"-\");", "a-b");
+
+  // format_join: formats each element like to_string(), separated by sep.
+  OUT("print format_join([1, 2, 3], \",\");", "1,2,3");
+  OUT("print format_join([1, 2, 3], \", \");", "1, 2, 3");
+  OUT("print format_join([], \",\");", "");
+  OUT("print format_join([true, nil, 4], \"|\");", "true|nil|4");
+
   ERRS("print char_at(\"hi\", 9);");            // OOB -> runtime error
   ERRS("print repeat(\"x\", 0 - 1);");          // negative count
 
