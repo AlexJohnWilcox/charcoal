@@ -454,6 +454,7 @@ RunResult run(const Module& m, Heap& h, Limits limits) {
           uint32_t newcap = arr->cap ? arr->cap * 2 : 4;
           SlotsObj* ns = h.new_slots(newcap);
           if (h.over_cap()) { res.error = "out of memory"; break; }
+          arr = static_cast<ArrayObj*>(fr.regs[ra].as.obj);  // new_slots may have moved arr
           for (uint32_t i = 0; i < arr->len; ++i) ns->data[i] = arr->slots->data[i];
           arr->slots = ns;
           arr->cap = newcap;

@@ -81,4 +81,22 @@ void test_gc() {
     CHECK(r.ok);
     CHECK(r.output == "20");           // xs survived; xs[1] still 20
   }
+
+  // (6) push under heap pressure: a safepoint bug in ARRAY_PUSH would corrupt or
+  // crash here, since collections fire mid-push while the array must survive.
+  {
+    const char* src =
+        "a = [];"
+        "i = 300;"
+        "while (i) { push(a, i); junk = [0, 0, 0, 0]; i = i - 1; }"
+        "print a[0];";
+    auto l = lex(src, std::strlen(src));
+    auto p = parse(l.tokens);
+    auto c = compile(p.program);
+    CHECK(c.ok);
+    Heap h(48 * 1024);
+    auto r = run(c.module, h, Limits{});
+    CHECK(r.ok);
+    CHECK(r.output == "300");
+  }
 }
