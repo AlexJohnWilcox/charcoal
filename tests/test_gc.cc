@@ -117,4 +117,22 @@ void test_gc() {
     CHECK(r.ok);
     CHECK(r.output.substr(0, 6) == "0,1,2,");   // joined ints, fixed version
   }
+
+  // (8) Lazy iterator happy path: drain a small array with no heap pressure.
+  {
+    const char* src =
+        "a = [5, 7, 9];"
+        "it = iter(a);"
+        "s = 0;"
+        "while (has_next(it)) { s = s + next(it); }"
+        "print s;";
+    auto l = lex(src, std::strlen(src));
+    auto p = parse(l.tokens);
+    auto c = compile(p.program);
+    CHECK(c.ok);
+    Heap h(64 * 1024);
+    auto r = run(c.module, h, Limits{});
+    CHECK(r.ok);
+    CHECK(r.output == "21");   // 5 + 7 + 9
+  }
 }

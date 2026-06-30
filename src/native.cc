@@ -89,12 +89,14 @@ bool is_num(const Value& v)   { return v.is_number(); }
 bool is_str(const Value& v)   { return v.tag == Tag::Obj && v.as.obj && v.as.obj->kind == ObjKind::String; }
 bool is_array(const Value& v) { return v.tag == Tag::Obj && v.as.obj && v.as.obj->kind == ObjKind::Array; }
 bool is_map(const Value& v)   { return v.tag == Tag::Obj && v.as.obj && v.as.obj->kind == ObjKind::Map; }
+bool is_iter(const Value& v)  { return v.tag == Tag::Obj && v.as.obj && v.as.obj->kind == ObjKind::Iter; }
 
 double    to_double(const Value& v) { return v.tag == Tag::Double ? v.as.d : static_cast<double>(v.as.i); }
 int64_t   as_i64(const Value& v)    { return v.tag == Tag::Int ? v.as.i : static_cast<int64_t>(v.as.d); }
 StringObj* as_str(const Value& v)   { return static_cast<StringObj*>(v.as.obj); }
 ArrayObj*  as_arr(const Value& v)   { return static_cast<ArrayObj*>(v.as.obj); }
 MapObj*    as_map(const Value& v)   { return static_cast<MapObj*>(v.as.obj); }
+IterObj*   as_iter(const Value& v)  { return static_cast<IterObj*>(v.as.obj); }
 const char* sbytes(const Value& v)  { return as_str(v)->bytes->data; }
 uint32_t    slen(const Value& v)    { return as_str(v)->len; }
 
@@ -134,6 +136,7 @@ std::string render(const Value& v) {
         case ObjKind::String: return std::string(sbytes(v), slen(v));
         case ObjKind::Array:  return "[array]";
         case ObjKind::Map:    return "[object]";
+        case ObjKind::Iter:   return "[iter]";
         default:              return "[fn]";
       }
   }
@@ -180,6 +183,7 @@ bool type_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
         case ObjKind::Array:    t = "array"; break;
         case ObjKind::Map:      t = "map"; break;
         case ObjKind::Function: t = "function"; break;
+        case ObjKind::Iter:     t = "iter"; break;
         default:                t = "nil"; break;
       }
       break;
@@ -647,6 +651,37 @@ bool arr_index_of_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
   for (uint32_t i = 0; i < arr->len; ++i)
     if (val_equal(arr->slots->data[i], a[1])) { out = Value::integer(i); return true; }
   out = Value::integer(-1);
+  return true;
+}
+
+// =======================================================================
+// Array iteration: iter / has_next / next
+// =======================================================================
+
+// iter(arr): open a lazy cursor over an array.
+bool iter_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
+  if (!is_array(a[0])) { err = "iter expects an array"; return false; }
+  IterObj* it = h.new_iter(as_arr(a[0]));       // roots arr internally
+  if (!it || h.over_cap()) { err = "out of memory"; return false; }
+  out = Value::object(it);
+  return true;
+}
+
+// has_next(it): true while the cursor has elements left.
+bool has_next_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_iter(a[0])) { err = "has_next expects an iterator"; return false; }
+  IterObj* it = as_iter(a[0]);
+  out = Value::boolean(it->idx < it->len);
+  return true;
+}
+
+// next(it): yield the next element and advance.
+bool next_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
+  if (!is_iter(a[0])) { err = "next expects an iterator"; return false; }
+  IterObj* it = as_iter(a[0]);
+  if (it->idx >= it->len) { err = "next: iterator exhausted"; return false; }
+  out = it->backing->data[it->idx];   // read element from the cached backing store
+  it->idx++;
   return true;
 }
 
@@ -3591,6 +3626,8 @@ const NativeEntry kNatives[] = {
     {"remove", 2, 2, remove_fn},       {"slice", 3, 3, slice_fn},
     {"reverse", 1, 1, reverse_fn},     {"sort", 1, 1, sort_fn},
     {"arr_index_of", 2, 2, arr_index_of_fn},
+    {"iter", 1, 1, iter_fn},           {"has_next", 1, 1, has_next_fn},
+    {"next", 1, 1, next_fn},
     // map
     {"keys", 1, 1, keys_fn},           {"values", 1, 1, values_fn},
     {"has", 2, 2, has_fn},             {"remove_key", 2, 2, remove_key_fn},
