@@ -533,7 +533,6 @@ bool format_join_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
   size_t ari  = hs.root(a[0].as.obj);
   size_t sepi = hs.root(a[1].as.obj);
 
-  Value* elems = hs.get<ArrayObj>(ari)->slots->data;  // cache the element buffer
   std::string acc;
   uint32_t n = hs.get<ArrayObj>(ari)->len;
   for (uint32_t i = 0; i < n; ++i) {
@@ -541,7 +540,7 @@ bool format_join_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
       StringObj* sep = hs.get<StringObj>(sepi);
       acc.append(sep->bytes->data, sep->len);
     }
-    Value e = elems[i];  // read element from the cached buffer
+    Value e = hs.get<ArrayObj>(ari)->slots->data[i];  // re-read the backing store each iteration
     Value rendered;
     if (!to_string_fn(&e, 1, h, rendered, err)) return false;
     acc.append(sbytes(rendered), slen(rendered));

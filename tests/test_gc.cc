@@ -99,4 +99,22 @@ void test_gc() {
     CHECK(r.ok);
     CHECK(r.output == "300");
   }
+
+  // (7) format_join under heap pressure: a relocation mid-format must not leave
+  // the input array's backing store cached. The buggy version reads poisoned
+  // from-space here; the fix re-reads the array each iteration.
+  {
+    const char* src =
+        "filler = range(0, 1500);"
+        "a = range(0, 400);"
+        "print format_join(a, \",\");";
+    auto l = lex(src, std::strlen(src));
+    auto p = parse(l.tokens);
+    auto c = compile(p.program);
+    CHECK(c.ok);
+    Heap h(48 * 1024);
+    auto r = run(c.module, h, Limits{});
+    CHECK(r.ok);
+    CHECK(r.output.substr(0, 6) == "0,1,2,");   // joined ints, fixed version
+  }
 }
