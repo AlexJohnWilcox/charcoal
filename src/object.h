@@ -6,7 +6,7 @@ namespace coal {
 
 class Heap;  // for GcVisitor
 
-enum class ObjKind : uint8_t { String, Array, Map, Function, Bytes, Slots, Closure };
+enum class ObjKind : uint8_t { String, Array, Map, Function, Bytes, Slots, Closure, Iter };
 
 // Common object header. `fwd` is GC scratch used ONLY during a collection: on
 // the old copy of an object it points at the new copy (nullptr = not yet
@@ -59,6 +59,16 @@ struct FunctionObj : Object {
 struct ClosureObj : Object {
   uint32_t  func_index;  // index into Module::funcs (the proto)
   SlotsObj* upvalues;    // captured values; a 0-length Slots if none
+};
+
+// A lazy cursor over an array, produced by the iter() builtin. `backing` caches
+// arr->slots at open time so each step skips the arr->slots indirection; `idx`
+// and `len` track the position and the length snapshot taken when opened.
+struct IterObj : Object {
+  ArrayObj* arr;       // the array being iterated
+  SlotsObj* backing;   // arr->slots at open time
+  uint32_t  idx;       // next index to yield
+  uint32_t  len;       // arr->len at open time
 };
 
 // Passed to a Heap's root enumerator. `visit` forwards a root Value in place: if

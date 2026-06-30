@@ -77,6 +77,7 @@ std::string render(const Value& v) {
         case ObjKind::Map:      return "[object]";
         case ObjKind::Function:
         case ObjKind::Closure:  return "[fn]";
+        case ObjKind::Iter:     return "[iter]";
         case ObjKind::Bytes:
         case ObjKind::Slots:    return "[internal]";  // never user-visible
       }

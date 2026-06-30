@@ -35,6 +35,7 @@ size_t size_of(const Object* o) {
     case ObjKind::Map:      return sizeof(MapObj);
     case ObjKind::Function: return sizeof(FunctionObj);
     case ObjKind::Closure:  return sizeof(ClosureObj);
+    case ObjKind::Iter:     return sizeof(IterObj);
   }
   return sizeof(Object);
 }
@@ -120,6 +121,11 @@ void Heap::trace(Object* o) {
       c->upvalues = static_cast<SlotsObj*>(copy(c->upvalues));  // upvalue values traced via the Slots
       break;
     }
+    case ObjKind::Iter: {
+      IterObj* it = static_cast<IterObj*>(o);
+      it->arr = static_cast<ArrayObj*>(copy(it->arr));  // forward the iterated array
+      break;
+    }
     case ObjKind::Bytes:
     case ObjKind::Function:
       break;  // no outgoing references
@@ -200,6 +206,22 @@ ClosureObj* Heap::new_closure(uint32_t func_index, uint32_t n_upvals) {
   c->func_index = func_index;
   c->upvalues = hs.get<SlotsObj>(si);    // re-read the (possibly moved) slots
   return c;
+}
+
+IterObj* Heap::new_iter(ArrayObj* arr) {
+  HandleScope hs(*this);
+  size_t ai = hs.root(arr);              // protect arr across the bump
+  void* mem = bump(sizeof(IterObj));     // may collect & move arr
+  if (!mem) return nullptr;
+
+  IterObj* it = static_cast<IterObj*>(mem);
+  it->kind    = ObjKind::Iter;
+  it->fwd     = nullptr;
+  it->arr     = hs.get<ArrayObj>(ai);    // re-read the (possibly moved) array
+  it->backing = it->arr->slots;          // cache the current backing store
+  it->idx     = 0;
+  it->len     = it->arr->len;
+  return it;
 }
 
 MapObj* Heap::new_map() {

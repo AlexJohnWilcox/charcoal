@@ -35,6 +35,10 @@ class Heap {
   // fills them in by value). Allocates the upvalue Slots first, then the closure.
   ClosureObj*  new_closure(uint32_t func_index, uint32_t n_upvals);
 
+  // A cursor over `arr` for external iteration. Single allocation; roots `arr`
+  // across it and caches arr->slots at open time.
+  IterObj* new_iter(ArrayObj* arr);
+
   size_t bytes_used() const;
   bool   over_cap() const;   // callers must check and raise (not crash) when true
 
