@@ -52,7 +52,7 @@ class Heap {
   bool   is_old(const void* p) const;
   size_t remset_size() const { return remembered_.size(); }  // test accessor
   size_t old_bytes_used() const { return old_top_; }         // test accessor
-  void   force_major_for_test() { collect(); compact_old(); }  // test hook
+  void   force_major_for_test() { collect_minor(); compact_old(); }  // test hook
 
   // Record that old object `holder` now stores a pointer to `stored` if that is
   // a young object. Called by every store of a Value into a live container.

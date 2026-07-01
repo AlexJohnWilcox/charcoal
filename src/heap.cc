@@ -269,7 +269,7 @@ Object* Heap::forward_old(Object* o) {
 // MINOR collection. Old objects are NEVER scanned wholesale -- the only way a
 // young object reachable solely from an old object survives is the remembered
 // set. PHASE ORDER MATTERS: force-promote remembered edges before roots.
-void Heap::collect() {
+void Heap::collect_minor() {
   to_top_ = 0;
   remembered_next_.clear();
   size_t old_scan = old_top_;  // objects promoted THIS cycle start here
@@ -316,6 +316,13 @@ void Heap::collect() {
   // The old arena keeps [old_, old_+old_top_) unpoisoned (never re-poisoned here).
   ASAN_POISON(to_, semi_);                  // the now-spare young space is fully dead
   ASAN_POISON(from_ + top_, semi_ - top_);  // and the active space's tail
+}
+
+// Collection entry point (called from bump()). Always run a minor; if the old
+// arena has crossed the high-water mark, follow with a major compaction.
+void Heap::collect() {
+  collect_minor();
+  if (old_top_ * 4 >= old_size_ * 3) compact_old();   // >= 75% full
 }
 
 // Mark every old object directly referenced by o (o may be young or old).

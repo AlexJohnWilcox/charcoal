@@ -359,4 +359,32 @@ void test_gc() {
     CHECK(keep->kind == ObjKind::Map);
     CHECK(keep->len == 0);
   }
+
+  // (G11) collect() itself -- not just the force_major_for_test() hook -- must
+  // interleave majors automatically. Repeat the G10 tenure-and-drop pattern many
+  // rounds WITHOUT ever calling the test hook: each round tenures 400 maps into
+  // old and then abandons them. On a 64KiB heap (32KiB old arena) this would blow
+  // past old_size_ and set over_cap_ within a few rounds if nothing ever reclaimed
+  // old garbage. If collect()'s high-water-mark dispatcher is wired up, the old
+  // arena keeps getting compacted automatically and stays bounded indefinitely.
+  {
+    Heap h(64u << 10);
+    HandleScope outer(h);
+    size_t keep_i = outer.root(h.new_map());
+
+    for (int round = 0; round < 20; ++round) {
+      HandleScope inner(h);
+      for (int i = 0; i < 400; ++i) (void)inner.root(h.new_map());
+      // Age the rooted batch past the promotion threshold so it tenures into old.
+      for (int i = 0; i <= Heap::PROMOTE_THRESHOLD; ++i) force_one_gc(h);
+      CHECK(!h.over_cap());   // must never trip mid-loop: majors are firing on the fly
+    }  // each round's tenured batch is unreachable garbage in old after this point
+
+    CHECK(!h.over_cap());                       // never overflowed: majors reclaimed
+    CHECK(h.old_bytes_used() < (48u << 10));     // stayed well under old_size_ (32KiB)
+
+    MapObj* keep = outer.get<MapObj>(keep_i);
+    CHECK(keep->kind == ObjKind::Map);
+    CHECK(keep->len == 0);
+  }
 }
