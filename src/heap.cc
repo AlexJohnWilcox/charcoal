@@ -99,15 +99,52 @@ void* Heap::bump(size_t n) {
   return p;
 }
 
+// Age-based forwarder for strong roots and the young frontier. Old objects are
+// never moved. A young survivor that has now lived through PROMOTE_THRESHOLD
+// collections is promoted into the old arena (age reset); otherwise it is copied
+// to young to-space with its age bumped. The memcpy precedes stamping o->fwd so
+// the new copy's own fwd is nullptr.
 Object* Heap::copy(Object* o) {
   if (!o) return nullptr;
+  if (is_old(o)) return o;    // old generation is non-moving
   if (o->fwd) return o->fwd;  // already evacuated this cycle
-  size_t sz = size_of(o);
-  size_t a = align8(sz);
-  Object* n = reinterpret_cast<Object*>(to_ + to_top_);
-  to_top_ += a;
+  size_t sz = size_of(o), a = align8(sz);
+  Object* n;
+  if (o->age + 1 >= PROMOTE_THRESHOLD && old_top_ + a <= old_size_) {
+    n = reinterpret_cast<Object*>(old_ + old_top_);   // promote
+    old_top_ += a;
+    ASAN_UNPOISON(n, a);
+    std::memcpy(n, o, sz);
+    n->age = 0;
+  } else if (to_top_ + a <= semi_) {
+    n = reinterpret_cast<Object*>(to_ + to_top_);      // keep young, one cycle older
+    to_top_ += a;
+    ASAN_UNPOISON(n, a);
+    std::memcpy(n, o, sz);
+    n->age = static_cast<uint8_t>(o->age < 255 ? o->age + 1 : 255);
+  } else {
+    over_cap_ = true;
+    return o;
+  }
+  o->fwd = n;
+  return n;
+}
+
+// Force a young object into the old arena. Returns o unchanged if already old,
+// or its existing forward if one was set this cycle (which may be a YOUNG copy,
+// when a strong root evacuated it first -- the caller detects that and
+// re-remembers). If the old arena is full, spill back to a young copy.
+Object* Heap::copy_promote(Object* o) {
+  if (!o) return nullptr;
+  if (is_old(o)) return o;
+  if (o->fwd) return o->fwd;  // already forwarded (possibly to a young copy)
+  size_t sz = size_of(o), a = align8(sz);
+  if (old_top_ + a > old_size_) { over_cap_ = true; return copy(o); }
+  Object* n = reinterpret_cast<Object*>(old_ + old_top_);
+  old_top_ += a;
   ASAN_UNPOISON(n, a);
-  std::memcpy(n, o, sz);  // copy BEFORE stamping fwd, so the new copy's fwd is nullptr
+  std::memcpy(n, o, sz);
+  n->age = 0;
   o->fwd = n;
   return n;
 }
@@ -154,27 +191,110 @@ void Heap::trace(Object* o) {
   }
 }
 
+// Old-frontier tracer. Parallel to trace(), but children are force-promoted into
+// the old arena via copy_promote(). If any child ends up still young this cycle
+// (because a strong root already evacuated it to to-space), the old->young edge
+// persists and `o` must be re-remembered so next cycle forwards it again --
+// otherwise a later collection moves that child and leaves `o` dangling.
+void Heap::trace_from_old(Object* o) {
+  bool young_child = false;
+  auto fwd_val = [&](Value& v) {
+    if (v.tag == Tag::Obj && v.as.obj) {
+      v.as.obj = copy_promote(v.as.obj);
+      if (in_to_space(v.as.obj)) young_child = true;
+    }
+  };
+  auto fwd_obj = [&](Object*& p) {
+    if (p) { p = copy_promote(p); if (in_to_space(p)) young_child = true; }
+  };
+  switch (o->kind) {
+    case ObjKind::String: {
+      auto* s = static_cast<StringObj*>(o);
+      Object* b = s->bytes; fwd_obj(b); s->bytes = static_cast<BytesObj*>(b);
+      break;
+    }
+    case ObjKind::Array: {
+      auto* a = static_cast<ArrayObj*>(o);
+      Object* s = a->slots; fwd_obj(s); a->slots = static_cast<SlotsObj*>(s);
+      break;
+    }
+    case ObjKind::Map: {
+      auto* m = static_cast<MapObj*>(o);
+      Object* k = m->keys; fwd_obj(k); m->keys = static_cast<SlotsObj*>(k);
+      Object* v = m->vals; fwd_obj(v); m->vals = static_cast<SlotsObj*>(v);
+      break;
+    }
+    case ObjKind::Slots: {
+      auto* s = static_cast<SlotsObj*>(o);
+      for (uint32_t i = 0; i < s->count; ++i) fwd_val(s->data[i]);
+      break;
+    }
+    case ObjKind::Closure: {
+      auto* c = static_cast<ClosureObj*>(o);
+      Object* u = c->upvalues; fwd_obj(u); c->upvalues = static_cast<SlotsObj*>(u);
+      break;
+    }
+    case ObjKind::Iter: {
+      auto* it = static_cast<IterObj*>(o);
+      Object* ar = it->arr; fwd_obj(ar); it->arr = static_cast<ArrayObj*>(ar);
+      break;
+    }
+    case ObjKind::Bytes:
+    case ObjKind::Function:
+      break;  // no outgoing references
+  }
+  if (young_child) remembered_next_.push_back(o);
+}
+
+// MINOR collection. Old objects are NEVER scanned wholesale -- the only way a
+// young object reachable solely from an old object survives is the remembered
+// set. PHASE ORDER MATTERS: force-promote remembered edges before roots.
 void Heap::collect() {
   to_top_ = 0;
+  remembered_next_.clear();
+  size_t old_scan = old_top_;  // objects promoted THIS cycle start here
 
-  // Forward all roots into to-space. Forwarding pointers live in from_ (the old
-  // space), which stays valid and unpoisoned until after the scan below.
+  // Phase 1: process the remembered set BEFORE forwarding roots. Nothing else is
+  // forwarded yet, so each barriered young child promotes cleanly into old.
+  std::vector<Object*> rem;
+  rem.swap(remembered_);
+  for (Object* r : rem) trace_from_old(r);
+
+  // Phase 2: forward strong roots (age-based; a survivor may promote). Forwarding
+  // pointers live in from_, which stays valid and unpoisoned until the swap below.
   for (Object*& h : handles_) h = copy(h);
   if (roots_) { GcVisitor v{this}; roots_(v); }
 
-  // Cheney scan: trace each object already in to-space; tracing may append more.
-  size_t scan = 0;
-  while (scan < to_top_) {
-    Object* o = reinterpret_cast<Object*>(to_ + scan);
-    trace(o);
-    scan += align8(size_of(o));
+  // Phase 3: two-frontier Cheney scan to a fixpoint. The young frontier may
+  // age-promote children into old; the old frontier force-promotes young children
+  // (or, on old-arena overflow, spills back to young). Either can feed the other,
+  // so loop until BOTH are drained.
+  size_t yscan = 0;
+  bool progress = true;
+  while (progress) {
+    progress = false;
+    while (yscan < to_top_) {
+      Object* o = reinterpret_cast<Object*>(to_ + yscan);
+      trace(o);
+      yscan += align8(size_of(o));
+      progress = true;
+    }
+    while (old_scan < old_top_) {
+      Object* o = reinterpret_cast<Object*>(old_ + old_scan);
+      trace_from_old(o);
+      old_scan += align8(size_of(o));
+      progress = true;
+    }
   }
 
+  // Install next cycle's remembered set and flip the young semispaces.
+  remembered_.swap(remembered_next_);
   std::swap(from_, to_);
   top_ = to_top_;
 
-  // Invariant: exactly [from_, from_+top_) is unpoisoned.
-  ASAN_POISON(to_, semi_);                  // the now-spare space is fully dead
+  // Invariant: in the young generation, exactly [from_, from_+top_) is unpoisoned.
+  // The old arena keeps [old_, old_+old_top_) unpoisoned (never re-poisoned here).
+  ASAN_POISON(to_, semi_);                  // the now-spare young space is fully dead
   ASAN_POISON(from_ + top_, semi_ - top_);  // and the active space's tail
 }
 

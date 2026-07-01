@@ -71,6 +71,21 @@ class Heap {
   void  collect();
   void  trace(Object* o);
 
+  // Force a young object into the old arena (or return its existing forward,
+  // which MAY be young if a strong root already copied it this cycle). Used for
+  // the old frontier and for remembered old->young edges.
+  Object* copy_promote(Object* o);
+  // Old-frontier tracer: forward each child via copy_promote(); if a child stays
+  // young the old->young edge persists, so the holder is re-remembered.
+  void    trace_from_old(Object* o);
+  // True iff p is in the young to-space being filled this collection (i.e. a
+  // survivor kept young this cycle). Unlike is_young(), which tests from_, this
+  // tests to_ -- the space a just-forwarded young child actually lives in.
+  bool    in_to_space(const void* p) const {
+    auto b = reinterpret_cast<const uint8_t*>(p);
+    return (b >= to_ && b < to_ + semi_);
+  }
+
   uint8_t* space_a_ = nullptr;
   uint8_t* space_b_ = nullptr;
   uint8_t* from_ = nullptr;   // active semispace
@@ -83,7 +98,8 @@ class Heap {
   uint8_t* old_ = nullptr;     // non-moving old generation arena
   size_t   old_size_ = 0;
   size_t   old_top_ = 0;
-  std::vector<Object*> remembered_;  // old objects holding a young pointer
+  std::vector<Object*> remembered_;       // old objects holding a young pointer
+  std::vector<Object*> remembered_next_;  // holders re-remembered for the next cycle
 
   std::function<void(GcVisitor&)> roots_;
   std::vector<Object*> handles_;  // HandleScope root slots
