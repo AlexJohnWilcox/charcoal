@@ -580,12 +580,14 @@ bool insert_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
     arr = as_arr(a[0]);                   // re-read after the safepoint
     for (uint32_t i = 0; i < arr->len; ++i) ns->data[i] = arr->slots->data[i];
     arr->slots = ns;
+    h.write_barrier(arr, Value::object(ns));
     arr->cap = newcap;
   }
   arr = as_arr(a[0]);          // re-read (harmless if no grow happened)
   Value x = a[2];              // read the value AFTER any allocation
   for (uint32_t j = len; j > idx; --j) arr->slots->data[j] = arr->slots->data[j - 1];
   arr->slots->data[idx] = x;
+  h.write_barrier(arr->slots, x);
   arr->len = len + 1;
   out = Value::nil();
   return true;
@@ -749,7 +751,7 @@ bool remove_key_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
 // object, so it stays valid across the allocations.
 void map_put(MapObj* m, const char* key, uint32_t klen, Value val, Heap& h) {
   int j = map_index(m, key, klen);
-  if (j >= 0) { m->vals->data[j] = val; return; }
+  if (j >= 0) { m->vals->data[j] = val; h.write_barrier(m->vals, val); return; }  // overwrite
 
   HandleScope hs(h);
   size_t mi = hs.root(m);
@@ -773,6 +775,8 @@ void map_put(MapObj* m, const char* key, uint32_t klen, Value val, Heap& h) {
     }
     m->keys = nk;
     m->vals = nv;
+    h.write_barrier(m, Value::object(nk));
+    h.write_barrier(m, Value::object(nv));
     m->cap = newcap;
   }
 
@@ -782,7 +786,9 @@ void map_put(MapObj* m, const char* key, uint32_t klen, Value val, Heap& h) {
   if (val_obj) val.as.obj = hs.get<Object>(vi);
   uint32_t i = m->len;
   m->keys->data[i] = Value::object(ks);
+  h.write_barrier(m->keys, Value::object(ks));
   m->vals->data[i] = val;
+  h.write_barrier(m->vals, val);
   m->len = i + 1;
 }
 
@@ -1052,6 +1058,7 @@ bool fill_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
   ArrayObj* arr = static_cast<ArrayObj*>(rv.as.obj);
   Value val = a[1];  // re-read the value AFTER the allocation (it may have moved)
   for (int64_t i = 0; i < c; ++i) arr->slots->data[i] = val;
+  h.write_barrier(arr->slots, val);
   out = rv;
   return true;
 }
@@ -1065,8 +1072,14 @@ bool concat_arr_fn(Value* a, uint32_t, Heap& h, Value& out, std::string& err) {
   ArrayObj* r  = static_cast<ArrayObj*>(rv.as.obj);
   ArrayObj* ra = as_arr(a[0]);  // re-read after the alloc
   ArrayObj* rb = as_arr(a[1]);
-  for (uint64_t i = 0; i < la; ++i) r->slots->data[i] = ra->slots->data[i];
-  for (uint64_t i = 0; i < lb; ++i) r->slots->data[la + i] = rb->slots->data[i];
+  for (uint64_t i = 0; i < la; ++i) {
+    r->slots->data[i] = ra->slots->data[i];
+    h.write_barrier(r->slots, ra->slots->data[i]);
+  }
+  for (uint64_t i = 0; i < lb; ++i) {
+    r->slots->data[la + i] = rb->slots->data[i];
+    h.write_barrier(r->slots, rb->slots->data[i]);
+  }
   out = rv;
   return true;
 }

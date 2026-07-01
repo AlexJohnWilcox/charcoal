@@ -164,4 +164,16 @@ void test_gc() {
     CHECK(!h.is_old(a));
     CHECK(h.remset_size() == 0);
   }
+
+  // (G2) Barrier on a young holder records nothing (holder isn't old yet).
+  {
+    Heap h(64 * 1024);
+    HandleScope hs(h);
+    size_t ai = hs.root(h.new_array(2));
+    StringObj* s = h.new_string("v", 1);           // safepoint
+    ArrayObj* a = hs.get<ArrayObj>(ai);
+    a->slots->data[0] = Value::object(s);
+    h.write_barrier(a->slots, Value::object(s));    // young holder -> no-op
+    CHECK(h.remset_size() == 0);
+  }
 }

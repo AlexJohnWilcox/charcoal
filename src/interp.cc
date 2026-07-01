@@ -102,7 +102,7 @@ int map_find(MapObj* m, const char* key, uint32_t klen) {
 // re-read after each allocation — never reuse a pointer from before a safepoint.
 void map_set(MapObj* m, const char* key, uint32_t klen, Value val, Heap& h) {
   int j = map_find(m, key, klen);
-  if (j >= 0) { m->vals->data[j] = val; return; }  // overwrite: no allocation
+  if (j >= 0) { m->vals->data[j] = val; h.write_barrier(m->vals, val); return; }  // overwrite
 
   HandleScope hs(h);
   size_t mi = hs.root(m);
@@ -127,6 +127,8 @@ void map_set(MapObj* m, const char* key, uint32_t klen, Value val, Heap& h) {
     }
     m->keys = nk;
     m->vals = nv;
+    h.write_barrier(m, Value::object(nk));
+    h.write_barrier(m, Value::object(nv));
     m->cap = newcap;
   }
 
@@ -137,7 +139,9 @@ void map_set(MapObj* m, const char* key, uint32_t klen, Value val, Heap& h) {
 
   uint32_t i = m->len;
   m->keys->data[i] = Value::object(ks);
+  h.write_barrier(m->keys, Value::object(ks));
   m->vals->data[i] = val;
+  h.write_barrier(m->vals, val);
   m->len = i + 1;
 }
 
@@ -439,6 +443,7 @@ RunResult run(const Module& m, Heap& h, Limits limits) {
         int64_t idx = vi.as.i;
         if (idx < 0 || idx >= static_cast<int64_t>(arr->len)) { res.error = "index out of range"; break; }
         arr->slots->data[idx] = fr.regs[vr];
+        h.write_barrier(arr->slots, fr.regs[vr]);
         fr.pc += 4;
         break;
       }
@@ -458,9 +463,11 @@ RunResult run(const Module& m, Heap& h, Limits limits) {
           arr = static_cast<ArrayObj*>(fr.regs[ra].as.obj);  // new_slots may have moved arr
           for (uint32_t i = 0; i < arr->len; ++i) ns->data[i] = arr->slots->data[i];
           arr->slots = ns;
+          h.write_barrier(arr, Value::object(ns));
           arr->cap = newcap;
         }
         arr->slots->data[arr->len] = fr.regs[rv];
+        h.write_barrier(arr->slots, fr.regs[rv]);
         arr->len++;
         fr.pc += 3;
         break;

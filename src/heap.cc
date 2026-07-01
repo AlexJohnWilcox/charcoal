@@ -50,7 +50,12 @@ bool Heap::is_old(const void* p) const {
   auto b = reinterpret_cast<const uint8_t*>(p);
   return (b >= old_ && b < old_ + old_top_);
 }
-void Heap::write_barrier(Object*, Value) {}
+void Heap::write_barrier(Object* holder, Value stored) {
+  if (stored.tag != Tag::Obj || !stored.as.obj) return;
+  if (is_old(holder) && is_young(stored.as.obj)) {
+    remembered_.push_back(holder);   // dedup is unnecessary; scan tolerates repeats
+  }
+}
 
 void GcVisitor::visit(Value& v) {
   if (v.tag == Tag::Obj && v.as.obj) v.as.obj = heap->copy(v.as.obj);
