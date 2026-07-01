@@ -290,4 +290,30 @@ void test_gc() {
     StringObj* C2 = static_cast<StringObj*>(O2->slots->data[0].as.obj);
     CHECK(C2->len == 1 && C2->bytes->data[0] == 'Z');  // intact, not dangling
   }
+
+  // (G8) Filling the old arena is a graceful over-cap, not a crash. The old
+  // arena never collects (v1 scope: no major GC), so its occupancy is
+  // monotonic. Root a strictly growing set of survivors -- never released
+  // within this scope -- so more objects tenure every cycle than can ever be
+  // reclaimed; eventually neither the old arena (copy()'s promotion branch)
+  // nor young to-space (its fallback) can fit the next survivor, and over_cap
+  // must be set instead of writing past either bound. Checking over_cap() is
+  // false at the start and true only after the loop breaks proves this isn't
+  // vacuous -- the arena genuinely fills. Running clean under ASan/UBSan
+  // (no fault, no abort) proves the guards, not just the flag, hold.
+  {
+    Heap h(16 * 1024);
+    HandleScope hs(h);
+    CHECK(h.over_cap() == false);  // sanity: cap isn't already tripped at start
+
+    bool filled = false;
+    for (int i = 0; i < 40000; ++i) {
+      size_t si = hs.root(h.new_array(4));   // permanently rooted -> never reclaimed
+      (void)si;
+      for (int k = 0; k < 3; ++k) (void)h.new_array(2);  // extra GC pressure
+      if (h.over_cap()) { filled = true; break; }
+    }
+    CHECK(filled);                 // arena genuinely filled within the loop bound
+    CHECK(h.over_cap() == true);   // reached the cap cleanly (no ASan fault, no abort)
+  }
 }
