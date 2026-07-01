@@ -92,7 +92,16 @@ bool is_map(const Value& v)   { return v.tag == Tag::Obj && v.as.obj && v.as.obj
 bool is_iter(const Value& v)  { return v.tag == Tag::Obj && v.as.obj && v.as.obj->kind == ObjKind::Iter; }
 
 double    to_double(const Value& v) { return v.tag == Tag::Double ? v.as.d : static_cast<double>(v.as.i); }
-int64_t   as_i64(const Value& v)    { return v.tag == Tag::Int ? v.as.i : static_cast<int64_t>(v.as.d); }
+int64_t   as_i64(const Value& v)    {
+  if (v.tag == Tag::Int) return v.as.i;
+  // Saturate out-of-range and NaN doubles instead of an out-of-range cast (UB);
+  // callers range-check the result, so a saturated value fails their bounds test.
+  double d = v.as.d;
+  if (d != d)       return 0;
+  if (d >=  9.2e18) return  9223372036854775807LL;
+  if (d <= -9.2e18) return -9223372036854775807LL - 1;
+  return static_cast<int64_t>(d);
+}
 StringObj* as_str(const Value& v)   { return static_cast<StringObj*>(v.as.obj); }
 ArrayObj*  as_arr(const Value& v)   { return static_cast<ArrayObj*>(v.as.obj); }
 MapObj*    as_map(const Value& v)   { return static_cast<MapObj*>(v.as.obj); }

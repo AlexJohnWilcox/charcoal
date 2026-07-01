@@ -78,6 +78,7 @@ void test_native() {
   OUT("print format_join([true, nil, 4], \"|\");", "true|nil|4");
 
   ERRS("print char_at(\"hi\", 9);");            // OOB -> runtime error
+  ERRS("print char_at(\"hi\", 1.0e300);");      // huge double index saturates, not UB, then OOB
   ERRS("print repeat(\"x\", 0 - 1);");          // negative count
 
   // split -> array of strings
