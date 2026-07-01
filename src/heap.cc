@@ -436,7 +436,6 @@ void Heap::compact_old() {
     if (o->mark) update_children_old(o);
     s += align8(size_of(o));
   }
-  for (Object*& h : remembered_) h = forward_old(h);   // remembered-set fixup
   phase_ = GcPhase::MinorForward;
 
   // 5. Slide live objects down (memmove: source/dest may overlap within an obj).
