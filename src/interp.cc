@@ -170,7 +170,11 @@ RunResult run(const Module& m, Heap& h, Limits limits) {
       for (Value& r : f.regs) v.visit(r);
       // A frame mid-call may be executing a closure; keep it (and its upvalues)
       // alive and update the frame's pointer if the collector moves it.
-      if (f.closure) f.closure = static_cast<ClosureObj*>(v.heap->copy(f.closure));
+      if (f.closure) {
+        Object* c = f.closure;
+        v.visit_obj(c);
+        f.closure = static_cast<ClosureObj*>(c);
+      }
     }
   });
 

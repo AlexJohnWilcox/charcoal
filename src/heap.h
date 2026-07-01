@@ -9,6 +9,8 @@ namespace coal {
 
 class HandleScope;
 
+enum class GcPhase { MinorForward, MajorMark, MajorUpdate };
+
 // All object creation goes through Heap. M2 is a Cheney semispace collector: a
 // collection can happen only inside a new_* call, and it MOVES every live
 // object. Consumers must never hold a raw Object* (or interior pointer) across a
@@ -64,12 +66,24 @@ class Heap {
   // so GcVisitor can drive it; not for general consumer use.
   Object* copy(Object* o);
 
+  // Major-collection hooks used by GcVisitor. mark_old marks a live old object
+  // (no-op for young/null); forward_old maps an old pointer to its compacted
+  // address (identity for young/null).
+  void     mark_old(Object* o);
+  Object*  forward_old(Object* o);
+  GcPhase  phase_ = GcPhase::MinorForward;
+
  private:
   friend class HandleScope;
 
   void* bump(size_t n);
   void  collect();
   void  trace(Object* o);
+  void collect_minor();          // the generational minor collection
+  void compact_old();            // Lisp2 sliding compaction of the old arena
+  void mark_children_old(Object* o);    // mark this object's old-pointing children
+  void update_children_old(Object* o);  // rewrite this object's old children to ->fwd
+  std::vector<Object*> mark_work_;      // major-mark worklist
 
   // Force a young object into the old arena (or return its existing forward,
   // which MAY be young if a strong root already copied it this cycle). Used for

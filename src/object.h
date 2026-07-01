@@ -14,6 +14,7 @@ enum class ObjKind : uint8_t { String, Array, Map, Function, Bytes, Slots, Closu
 struct Object {
   ObjKind  kind;
   uint8_t  age;   // minor collections survived; used for promotion (GC-managed)
+  uint8_t  mark;  // major-GC liveness mark; 0 outside a major collection
   Object*  fwd;
 };
 
@@ -75,7 +76,8 @@ struct IterObj : Object {
 // at the moved copy.
 struct GcVisitor {
   Heap* heap;
-  void  visit(Value& v);  // defined in heap.cc
+  void  visit(Value& v);       // defined in heap.cc
+  void  visit_obj(Object*& p); // defined in heap.cc
 };
 
 }  // namespace coal

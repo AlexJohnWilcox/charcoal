@@ -57,8 +57,17 @@ void Heap::write_barrier(Object* holder, Value stored) {
   }
 }
 
+void GcVisitor::visit_obj(Object*& p) {
+  if (!p) return;
+  switch (heap->phase_) {
+    case GcPhase::MinorForward: p = heap->copy(p);         break;
+    case GcPhase::MajorMark:    heap->mark_old(p);         break;
+    case GcPhase::MajorUpdate:  p = heap->forward_old(p);  break;
+  }
+}
+
 void GcVisitor::visit(Value& v) {
-  if (v.tag == Tag::Obj && v.as.obj) v.as.obj = heap->copy(v.as.obj);
+  if (v.tag == Tag::Obj && v.as.obj) visit_obj(v.as.obj);
 }
 
 Heap::Heap(size_t max_bytes) {
@@ -244,6 +253,17 @@ void Heap::trace_from_old(Object* o) {
       break;  // no outgoing references
   }
   if (young_child) remembered_next_.push_back(o);
+}
+
+void Heap::mark_old(Object* o) {
+  if (!o || !is_old(o) || o->mark) return;
+  o->mark = 1;
+  mark_work_.push_back(o);
+}
+
+Object* Heap::forward_old(Object* o) {
+  if (o && is_old(o) && o->fwd) return o->fwd;
+  return o;
 }
 
 // MINOR collection. Old objects are NEVER scanned wholesale -- the only way a

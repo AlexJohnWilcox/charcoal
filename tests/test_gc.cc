@@ -316,4 +316,16 @@ void test_gc() {
     CHECK(filled);                 // arena genuinely filled within the loop bound
     CHECK(h.over_cap() == true);   // reached the cap cleanly (no ASan fault, no abort)
   }
+
+  // (G9) The object header carries a major-GC mark bit without growing: the
+  // mark byte lives in existing header padding, so sizeof(Object) and every
+  // object's layout stay unchanged.
+  {
+    CHECK(sizeof(coal::Object) == 16);
+    coal::Object o{};
+    o.mark = 1;
+    CHECK(o.mark == 1);
+    o.mark = 0;
+    CHECK(o.mark == 0);
+  }
 }
