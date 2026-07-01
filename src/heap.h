@@ -42,6 +42,18 @@ class Heap {
   size_t bytes_used() const;
   bool   over_cap() const;   // callers must check and raise (not crash) when true
 
+  // Generation membership is by address range. `age`/promotion move survivors
+  // from the young semispace into the old arena; minor collections never scan
+  // the old arena except through the remembered set.
+  static constexpr uint8_t PROMOTE_THRESHOLD = 2;
+  bool   is_young(const void* p) const;
+  bool   is_old(const void* p) const;
+  size_t remset_size() const { return remembered_.size(); }  // test accessor
+
+  // Record that old object `holder` now stores a pointer to `stored` if that is
+  // a young object. Called by every store of a Value into a live container.
+  void write_barrier(Object* holder, Value stored);
+
   // The interpreter installs an enumerator that visits every root (the register
   // files). Called at the start of each collection.
   void set_root_enumerator(std::function<void(GcVisitor&)> roots) {
@@ -67,6 +79,11 @@ class Heap {
   size_t   top_ = 0;          // bump offset within from_
   size_t   to_top_ = 0;       // bump offset within to_ during a collection
   bool     over_cap_ = false;
+
+  uint8_t* old_ = nullptr;     // non-moving old generation arena
+  size_t   old_size_ = 0;
+  size_t   old_top_ = 0;
+  std::vector<Object*> remembered_;  // old objects holding a young pointer
 
   std::function<void(GcVisitor&)> roots_;
   std::vector<Object*> handles_;  // HandleScope root slots

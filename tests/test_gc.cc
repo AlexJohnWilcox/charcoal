@@ -155,4 +155,13 @@ void test_gc() {
     CHECK(r.ok);
     CHECK(r.output == "79800");   // sum 0..399 = 399*400/2
   }
+
+  // (G1) Fresh objects are young; old arena starts empty.
+  {
+    Heap h(64 * 1024);
+    ArrayObj* a = h.new_array(1);
+    CHECK(h.is_young(a));
+    CHECK(!h.is_old(a));
+    CHECK(h.remset_size() == 0);
+  }
 }

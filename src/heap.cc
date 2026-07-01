@@ -42,6 +42,16 @@ size_t size_of(const Object* o) {
 
 }  // namespace
 
+bool Heap::is_young(const void* p) const {
+  auto b = reinterpret_cast<const uint8_t*>(p);
+  return (b >= from_ && b < from_ + semi_);   // live young objects are in from_
+}
+bool Heap::is_old(const void* p) const {
+  auto b = reinterpret_cast<const uint8_t*>(p);
+  return (b >= old_ && b < old_ + old_top_);
+}
+void Heap::write_barrier(Object*, Value) {}
+
 void GcVisitor::visit(Value& v) {
   if (v.tag == Tag::Obj && v.as.obj) v.as.obj = heap->copy(v.as.obj);
 }
@@ -55,6 +65,11 @@ Heap::Heap(size_t max_bytes) {
   top_ = 0;
   ASAN_POISON(space_a_, semi_);
   ASAN_POISON(space_b_, semi_);
+
+  old_size_ = semi_;                                       // one arena, same size
+  old_ = static_cast<uint8_t*>(std::malloc(old_size_));
+  old_top_ = 0;
+  ASAN_POISON(old_, old_size_);
 }
 
 Heap::~Heap() {
@@ -63,6 +78,8 @@ Heap::~Heap() {
   ASAN_UNPOISON(space_b_, semi_);
   std::free(space_a_);
   std::free(space_b_);
+  ASAN_UNPOISON(old_, old_size_);
+  std::free(old_);
 }
 
 void* Heap::bump(size_t n) {
@@ -168,6 +185,7 @@ StringObj* Heap::new_string(const char* p, uint32_t n) {
   StringObj* s = static_cast<StringObj*>(mem);
   s->kind = ObjKind::String;
   s->fwd = nullptr;
+  s->age = 0;
   s->len = n;
   s->bytes = hs.get<BytesObj>(bi);     // re-read the (possibly moved) bytes
   return s;
@@ -185,6 +203,7 @@ ArrayObj* Heap::new_array(uint32_t len) {
   ArrayObj* a = static_cast<ArrayObj*>(mem);
   a->kind = ObjKind::Array;
   a->fwd = nullptr;
+  a->age = 0;
   a->len = len;
   a->cap = len;
   a->slots = hs.get<SlotsObj>(si);    // re-read the (possibly moved) slots
@@ -203,6 +222,7 @@ ClosureObj* Heap::new_closure(uint32_t func_index, uint32_t n_upvals) {
   ClosureObj* c = static_cast<ClosureObj*>(mem);
   c->kind = ObjKind::Closure;
   c->fwd = nullptr;
+  c->age = 0;
   c->func_index = func_index;
   c->upvalues = hs.get<SlotsObj>(si);    // re-read the (possibly moved) slots
   return c;
@@ -217,6 +237,7 @@ IterObj* Heap::new_iter(ArrayObj* arr) {
   IterObj* it = static_cast<IterObj*>(mem);
   it->kind    = ObjKind::Iter;
   it->fwd     = nullptr;
+  it->age     = 0;
   it->arr     = hs.get<ArrayObj>(ai);    // re-read the (possibly moved) array
   it->idx     = 0;
   it->len     = it->arr->len;
@@ -229,6 +250,7 @@ MapObj* Heap::new_map() {
   MapObj* m = static_cast<MapObj*>(mem);
   m->kind = ObjKind::Map;
   m->fwd = nullptr;
+  m->age = 0;
   m->len = 0;
   m->cap = 0;
   m->keys = nullptr;
@@ -242,6 +264,7 @@ FunctionObj* Heap::new_function(uint32_t func_index) {
   FunctionObj* f = static_cast<FunctionObj*>(mem);
   f->kind = ObjKind::Function;
   f->fwd = nullptr;
+  f->age = 0;
   f->func_index = func_index;
   return f;
 }
@@ -252,6 +275,7 @@ SlotsObj* Heap::new_slots(uint32_t count) {
   SlotsObj* s = static_cast<SlotsObj*>(mem);
   s->kind = ObjKind::Slots;
   s->fwd = nullptr;
+  s->age = 0;
   s->count = count;
   for (uint32_t i = 0; i < count; ++i) s->data[i] = Value::nil();
   return s;
@@ -263,6 +287,7 @@ BytesObj* Heap::new_bytes(const char* p, uint32_t n) {
   BytesObj* b = static_cast<BytesObj*>(mem);
   b->kind = ObjKind::Bytes;
   b->fwd = nullptr;
+  b->age = 0;
   b->len = n;
   if (n) std::memcpy(b->data, p, n);
   return b;

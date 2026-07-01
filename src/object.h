@@ -12,8 +12,9 @@ enum class ObjKind : uint8_t { String, Array, Map, Function, Bytes, Slots, Closu
 // the old copy of an object it points at the new copy (nullptr = not yet
 // copied). Outside a collection it is always nullptr.
 struct Object {
-  ObjKind kind;
-  Object* fwd;
+  ObjKind  kind;
+  uint8_t  age;   // minor collections survived; used for promotion (GC-managed)
+  Object*  fwd;
 };
 
 // Variable-size raw bytes (string contents). `data` is a flexible array; an
