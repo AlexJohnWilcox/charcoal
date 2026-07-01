@@ -102,7 +102,7 @@ int map_find(MapObj* m, const char* key, uint32_t klen) {
 // re-read after each allocation — never reuse a pointer from before a safepoint.
 void map_set(MapObj* m, const char* key, uint32_t klen, Value val, Heap& h) {
   int j = map_find(m, key, klen);
-  if (j >= 0) { m->vals->data[j] = val; h.write_barrier(m->vals, val); return; }  // overwrite
+  if (j >= 0) { m->vals->data[j] = val; return; }  // overwrite: no allocation
 
   HandleScope hs(h);
   size_t mi = hs.root(m);

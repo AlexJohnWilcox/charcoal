@@ -760,7 +760,7 @@ bool remove_key_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
 // object, so it stays valid across the allocations.
 void map_put(MapObj* m, const char* key, uint32_t klen, Value val, Heap& h) {
   int j = map_index(m, key, klen);
-  if (j >= 0) { m->vals->data[j] = val; h.write_barrier(m->vals, val); return; }  // overwrite
+  if (j >= 0) { m->vals->data[j] = val; return; }  // overwrite: no allocation
 
   HandleScope hs(h);
   size_t mi = hs.root(m);
