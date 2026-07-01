@@ -328,4 +328,35 @@ void test_gc() {
     o.mark = 0;
     CHECK(o.mark == 0);
   }
+
+  // (G10) A major collection reclaims dead old objects: root one map to keep,
+  // then tenure a large batch of unrooted maps into old (by aging them past
+  // promotion while temporarily rooted in a nested scope), drop that root, and
+  // force a major. old_bytes_used() must strictly shrink, and the kept map must
+  // still be readable and of the right kind -- proving reclamation actually
+  // happened, not just that the accessor exists.
+  {
+    Heap h(64 * 1024);
+    HandleScope outer(h);
+    size_t keep_i = outer.root(h.new_map());
+
+    {
+      HandleScope inner(h);
+      for (int i = 0; i < 400; ++i) (void)inner.root(h.new_map());
+      // Age the rooted batch past the promotion threshold so it tenures into old.
+      for (int i = 0; i <= Heap::PROMOTE_THRESHOLD; ++i) force_one_gc(h);
+    }  // inner scope ends: the tenured maps are now unreachable garbage in old
+
+    size_t before = h.old_bytes_used();
+    CHECK(before > 0);              // sanity: promotion actually filled old
+
+    h.force_major_for_test();
+
+    size_t after = h.old_bytes_used();
+    CHECK(after < before);          // dead old objects were reclaimed
+
+    MapObj* keep = outer.get<MapObj>(keep_i);
+    CHECK(keep->kind == ObjKind::Map);
+    CHECK(keep->len == 0);
+  }
 }

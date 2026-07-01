@@ -318,6 +318,141 @@ void Heap::collect() {
   ASAN_POISON(from_ + top_, semi_ - top_);  // and the active space's tail
 }
 
+// Mark every old object directly referenced by o (o may be young or old).
+void Heap::mark_children_old(Object* o) {
+  switch (o->kind) {
+    case ObjKind::String: mark_old(static_cast<StringObj*>(o)->bytes); break;
+    case ObjKind::Array:  mark_old(static_cast<ArrayObj*>(o)->slots);  break;
+    case ObjKind::Map: {
+      auto* m = static_cast<MapObj*>(o);
+      mark_old(m->keys); mark_old(m->vals); break;
+    }
+    case ObjKind::Slots: {
+      auto* s = static_cast<SlotsObj*>(o);
+      for (uint32_t i = 0; i < s->count; ++i) {
+        Value& v = s->data[i];
+        if (v.tag == Tag::Obj && v.as.obj) mark_old(v.as.obj);
+      }
+      break;
+    }
+    case ObjKind::Closure: mark_old(static_cast<ClosureObj*>(o)->upvalues); break;
+    case ObjKind::Iter:    mark_old(static_cast<IterObj*>(o)->arr);         break;
+    case ObjKind::Bytes:
+    case ObjKind::Function: break;
+  }
+}
+
+// Rewrite every old-pointing child of o to its forwarded (compacted) address.
+void Heap::update_children_old(Object* o) {
+  switch (o->kind) {
+    case ObjKind::String: {
+      auto* s = static_cast<StringObj*>(o);
+      s->bytes = static_cast<BytesObj*>(forward_old(s->bytes)); break;
+    }
+    case ObjKind::Array: {
+      auto* a = static_cast<ArrayObj*>(o);
+      a->slots = static_cast<SlotsObj*>(forward_old(a->slots)); break;
+    }
+    case ObjKind::Map: {
+      auto* m = static_cast<MapObj*>(o);
+      m->keys = static_cast<SlotsObj*>(forward_old(m->keys));
+      m->vals = static_cast<SlotsObj*>(forward_old(m->vals)); break;
+    }
+    case ObjKind::Slots: {
+      auto* s = static_cast<SlotsObj*>(o);
+      for (uint32_t i = 0; i < s->count; ++i) {
+        Value& v = s->data[i];
+        if (v.tag == Tag::Obj && v.as.obj) v.as.obj = forward_old(v.as.obj);
+      }
+      break;
+    }
+    case ObjKind::Closure: {
+      auto* c = static_cast<ClosureObj*>(o);
+      c->upvalues = static_cast<SlotsObj*>(forward_old(c->upvalues)); break;
+    }
+    case ObjKind::Iter: {
+      auto* it = static_cast<IterObj*>(o);
+      it->arr = static_cast<ArrayObj*>(forward_old(it->arr)); break;
+    }
+    case ObjKind::Bytes:
+    case ObjKind::Function: break;
+  }
+}
+
+// MAJOR collection: Lisp2 sliding compaction of the old arena. Must be called
+// right after a minor (young lives in from_, remembered_ holds old->young edges).
+// Reclaims dead old objects; slides live ones down; poisons the freed tail.
+void Heap::compact_old() {
+  // 1. Clear scratch on every old object.
+  for (size_t s = 0; s < old_top_; ) {
+    Object* o = reinterpret_cast<Object*>(old_ + s);
+    o->mark = 0; o->fwd = nullptr;
+    s += align8(size_of(o));
+  }
+
+  // 2. Mark live old objects: from strong roots, from young survivors (live),
+  //    and transitively through old->old edges.
+  mark_work_.clear();
+  phase_ = GcPhase::MajorMark;
+  for (Object* h : handles_) mark_old(h);
+  if (roots_) { GcVisitor v{this}; roots_(v); }
+  for (size_t s = 0; s < top_; ) {                 // young survivors are roots
+    Object* y = reinterpret_cast<Object*>(from_ + s);
+    mark_children_old(y);
+    s += align8(size_of(y));
+  }
+  while (!mark_work_.empty()) {                     // old->old closure
+    Object* o = mark_work_.back(); mark_work_.pop_back();
+    mark_children_old(o);
+  }
+
+  // 3. Compute forwarding addresses (pack live objects downward).
+  size_t new_top = 0;
+  for (size_t s = 0; s < old_top_; ) {
+    Object* o = reinterpret_cast<Object*>(old_ + s);
+    size_t a = align8(size_of(o));
+    if (o->mark) { o->fwd = reinterpret_cast<Object*>(old_ + new_top); new_top += a; }
+    s += a;
+  }
+
+  // 4. Update every pointer-into-old to its forwarded address.
+  phase_ = GcPhase::MajorUpdate;
+  for (Object*& h : handles_) h = forward_old(h);
+  if (roots_) { GcVisitor v{this}; roots_(v); }
+  for (size_t s = 0; s < top_; ) {                 // young survivors' old children
+    Object* y = reinterpret_cast<Object*>(from_ + s);
+    update_children_old(y);
+    s += align8(size_of(y));
+  }
+  for (size_t s = 0; s < old_top_; ) {             // old live objects' old children
+    Object* o = reinterpret_cast<Object*>(old_ + s);
+    if (o->mark) update_children_old(o);
+    s += align8(size_of(o));
+  }
+  for (Object*& h : remembered_) h = forward_old(h);   // remembered-set fixup
+  phase_ = GcPhase::MinorForward;
+
+  // 5. Slide live objects down (memmove: source/dest may overlap within an obj).
+  for (size_t s = 0; s < old_top_; ) {
+    Object* o = reinterpret_cast<Object*>(old_ + s);
+    size_t sz = size_of(o), a = align8(sz);
+    if (o->mark) {
+      Object* dst = o->fwd;
+      if (dst != o) std::memmove(dst, o, sz);
+    }
+    s += a;
+  }
+
+  // 6. Clear scratch on the compacted live region, poison the freed tail.
+  for (size_t s = 0; s < new_top; ) {
+    Object* o = reinterpret_cast<Object*>(old_ + s);
+    o->mark = 0; o->fwd = nullptr;
+    s += align8(size_of(o));
+  }
+  ASAN_POISON(old_ + new_top, old_size_ - new_top);
+  old_top_ = new_top;
+}
+
 StringObj* Heap::new_string(const char* p, uint32_t n) {
   BytesObj* b = new_bytes(p, n);  // alloc #1: bytes settled before the next alloc
   if (!b) return nullptr;
