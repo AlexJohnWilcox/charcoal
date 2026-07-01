@@ -5,6 +5,7 @@
 #include "parser.h"
 #include "test_main.h"
 
+#include <cstdio>
 #include <cstring>
 #include <string>
 
@@ -19,6 +20,55 @@ static void force_one_gc(Heap& h) {
     (void)h.new_array(2);
     if (h.bytes_used() < before) return;  // top_ dropped => a collection just fired
   }
+}
+
+// Minimal safepoint-correct map insert/overwrite for tests, using only Heap's
+// public API (mirrors interp.cc's map_set / native.cc's map_put, which are not
+// exposed outside their translation units).
+static void test_map_put(Heap& h, HandleScope& hs, size_t map_idx,
+                          const char* key, uint32_t klen, Value val) {
+  MapObj* m = hs.get<MapObj>(map_idx);
+  for (uint32_t j = 0; j < m->len; ++j) {
+    StringObj* ks = static_cast<StringObj*>(m->keys->data[j].as.obj);
+    if (ks->len == klen && std::memcmp(ks->bytes->data, key, klen) == 0) {
+      m->vals->data[j] = val;
+      h.write_barrier(m->vals, val);
+      return;  // overwrite
+    }
+  }
+  bool val_obj = (val.tag == Tag::Obj && val.as.obj != nullptr);
+  size_t vi = val_obj ? hs.root(val.as.obj) : 0;
+
+  if (m->len == m->cap) {
+    uint32_t newcap = m->cap ? m->cap * 2 : 4;
+    SlotsObj* nk = h.new_slots(newcap);                 // safepoint
+    size_t ki = hs.root(nk);
+    SlotsObj* nv = h.new_slots(newcap);                 // safepoint
+    size_t nvi = hs.root(nv);
+    m = hs.get<MapObj>(map_idx);                        // re-read after safepoints
+    nk = hs.get<SlotsObj>(ki);
+    nv = hs.get<SlotsObj>(nvi);
+    for (uint32_t i = 0; i < m->len; ++i) {
+      nk->data[i] = m->keys->data[i];
+      nv->data[i] = m->vals->data[i];
+    }
+    m->keys = nk;
+    m->vals = nv;
+    h.write_barrier(m, Value::object(nk));
+    h.write_barrier(m, Value::object(nv));
+    m->cap = newcap;
+  }
+
+  StringObj* ks = h.new_string(key, klen);              // safepoint
+  m = hs.get<MapObj>(map_idx);                          // re-read m and val
+  if (val_obj) val.as.obj = hs.get<Object>(vi);
+
+  uint32_t i = m->len;
+  m->keys->data[i] = Value::object(ks);
+  h.write_barrier(m->keys, Value::object(ks));
+  m->vals->data[i] = val;
+  h.write_barrier(m->vals, val);
+  m->len = i + 1;
 }
 
 void test_gc() {
@@ -386,5 +436,101 @@ void test_gc() {
     MapObj* keep = outer.get<MapObj>(keep_i);
     CHECK(keep->kind == ObjKind::Map);
     CHECK(keep->len == 0);
+  }
+
+  // (G12) Survivor integrity across minor -> major -> minor. Root several
+  // objects with cross-generation edges: keep_map (old, holds a young value
+  // that gets replaced each round -- a fresh old->young edge every time),
+  // keep_arr (old, plain data), and outer_map (old, whose value is another
+  // old map, inner_map -- an old->old edge). Tenure everything, churn garbage
+  // to force an automatic major (per G11, collect() interleaves majors on its
+  // own), force one further minor, then assert every kept object is still the
+  // right kind and its data is still readable and correct.
+  //
+  // Deliberately GENERAL: this checks kind + data only, never the timing of
+  // any one holder-forwarding step, so it must keep passing both now and
+  // after a later, narrower fix lands elsewhere for a specific stale-remset
+  // scenario -- that regression gets its own targeted test.
+  {
+    Heap h(64u << 10);
+    HandleScope outer(h);
+
+    size_t map_i = outer.root(h.new_map());
+    size_t arr_i = outer.root(h.new_array(3));
+    {
+      ArrayObj* a = outer.get<ArrayObj>(arr_i);
+      for (int i = 0; i < 3; ++i) a->slots->data[i] = Value::integer(100 + i);
+    }
+    size_t inner_map_i = outer.root(h.new_map());
+    size_t outer_map_i = outer.root(h.new_map());
+
+    // Tenure everything into old via repeated minor collections.
+    for (int i = 0; i <= Heap::PROMOTE_THRESHOLD; ++i) force_one_gc(h);
+    CHECK(h.is_old(outer.get<MapObj>(map_i)));
+    CHECK(h.is_old(outer.get<ArrayObj>(arr_i)));
+    CHECK(h.is_old(outer.get<MapObj>(inner_map_i)));
+    CHECK(h.is_old(outer.get<MapObj>(outer_map_i)));
+
+    // Old map -> old map edge: outer_map.child = inner_map.
+    test_map_put(h, outer, outer_map_i, "child", 5,
+                 Value::object(outer.get<MapObj>(inner_map_i)));
+
+    // Repeatedly store a fresh YOUNG string value into the old map (old->young
+    // edge, re-created each round) and churn unrooted garbage on a small heap
+    // so collect() is forced to interleave a major collection along the way.
+    const char* last_val = nullptr;
+    for (int round = 0; round < 30; ++round) {
+      char buf[16];
+      std::snprintf(buf, sizeof(buf), "v%02d", round);
+      StringObj* v = h.new_string(buf, 3);              // safepoint; young
+      test_map_put(h, outer, map_i, "val", 3, Value::object(v));  // overwrite
+      for (int i = 0; i < 200; ++i) (void)h.new_array(2);          // churn garbage
+      last_val = "v";  // (value content checked below via re-read)
+      (void)last_val;
+    }
+
+    // One further forced minor collection on top of whatever majors already
+    // fired above.
+    force_one_gc(h);
+
+    MapObj* keep_map = outer.get<MapObj>(map_i);
+    ArrayObj* keep_arr = outer.get<ArrayObj>(arr_i);
+    MapObj* keep_outer_map = outer.get<MapObj>(outer_map_i);
+
+    CHECK(keep_map->kind == ObjKind::Map);
+    CHECK(keep_arr->kind == ObjKind::Array);
+    CHECK(keep_outer_map->kind == ObjKind::Map);
+
+    // keep_arr's data is untouched.
+    CHECK(keep_arr->len == 3);
+    for (int i = 0; i < 3; ++i) {
+      CHECK(keep_arr->slots->data[i].tag == Tag::Int);
+      CHECK(keep_arr->slots->data[i].as.i == 100 + i);
+    }
+
+    // keep_map's last-stored value is readable and equal to what was stored
+    // (the 29th, final round: "v29").
+    int vj = -1;
+    for (uint32_t j = 0; j < keep_map->len; ++j) {
+      StringObj* ks = static_cast<StringObj*>(keep_map->keys->data[j].as.obj);
+      if (ks->len == 3 && std::memcmp(ks->bytes->data, "val", 3) == 0) { vj = static_cast<int>(j); break; }
+    }
+    CHECK(vj >= 0);
+    CHECK(keep_map->vals->data[vj].tag == Tag::Obj);
+    StringObj* v_final = static_cast<StringObj*>(keep_map->vals->data[vj].as.obj);
+    CHECK(v_final->len == 3);
+    CHECK(std::memcmp(v_final->bytes->data, "v29", 3) == 0);
+
+    // keep_outer_map's nested map is readable and still a Map.
+    int cj = -1;
+    for (uint32_t j = 0; j < keep_outer_map->len; ++j) {
+      StringObj* ks = static_cast<StringObj*>(keep_outer_map->keys->data[j].as.obj);
+      if (ks->len == 5 && std::memcmp(ks->bytes->data, "child", 5) == 0) { cj = static_cast<int>(j); break; }
+    }
+    CHECK(cj >= 0);
+    CHECK(keep_outer_map->vals->data[cj].tag == Tag::Obj);
+    Object* child_obj = keep_outer_map->vals->data[cj].as.obj;
+    CHECK(child_obj->kind == ObjKind::Map);
+    CHECK(static_cast<MapObj*>(child_obj)->len == 0);  // inner_map, never given entries
   }
 }
