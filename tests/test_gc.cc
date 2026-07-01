@@ -135,4 +135,24 @@ void test_gc() {
     CHECK(r.ok);
     CHECK(r.output == "21");   // 5 + 7 + 9
   }
+
+  // (9) Iterator under heap pressure: a collection between next() calls must not
+  // leave the cursor's cached backing store dangling. The buggy version reads
+  // poisoned from-space here; the fix re-derives the array's slots each step.
+  {
+    const char* src =
+        "a = range(0, 400);"
+        "it = iter(a);"
+        "s = 0;"
+        "while (has_next(it)) { junk = range(0, 30); s = s + next(it); }"
+        "print s;";
+    auto l = lex(src, std::strlen(src));
+    auto p = parse(l.tokens);
+    auto c = compile(p.program);
+    CHECK(c.ok);
+    Heap h(48 * 1024);
+    auto r = run(c.module, h, Limits{});
+    CHECK(r.ok);
+    CHECK(r.output == "79800");   // sum 0..399 = 399*400/2
+  }
 }

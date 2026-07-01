@@ -218,7 +218,6 @@ IterObj* Heap::new_iter(ArrayObj* arr) {
   it->kind    = ObjKind::Iter;
   it->fwd     = nullptr;
   it->arr     = hs.get<ArrayObj>(ai);    // re-read the (possibly moved) array
-  it->backing = it->arr->slots;          // cache the current backing store
   it->idx     = 0;
   it->len     = it->arr->len;
   return it;

@@ -61,12 +61,10 @@ struct ClosureObj : Object {
   SlotsObj* upvalues;    // captured values; a 0-length Slots if none
 };
 
-// A lazy cursor over an array, produced by the iter() builtin. `backing` caches
-// arr->slots at open time so each step skips the arr->slots indirection; `idx`
-// and `len` track the position and the length snapshot taken when opened.
+// A lazy cursor over an array, produced by the iter() builtin. `idx` and `len`
+// track the position and the length snapshot taken when opened.
 struct IterObj : Object {
   ArrayObj* arr;       // the array being iterated
-  SlotsObj* backing;   // arr->slots at open time
   uint32_t  idx;       // next index to yield
   uint32_t  len;       // arr->len at open time
 };

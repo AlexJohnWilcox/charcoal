@@ -680,7 +680,7 @@ bool next_fn(Value* a, uint32_t, Heap&, Value& out, std::string& err) {
   if (!is_iter(a[0])) { err = "next expects an iterator"; return false; }
   IterObj* it = as_iter(a[0]);
   if (it->idx >= it->len) { err = "next: iterator exhausted"; return false; }
-  out = it->backing->data[it->idx];   // read element from the cached backing store
+  out = it->arr->slots->data[it->idx];   // re-derive the backing store each step
   it->idx++;
   return true;
 }
